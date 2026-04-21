@@ -16,7 +16,7 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
     if (visible && !hasPermission) {
       requestPermission();
     }
-  }, [visible, hasPermission]);
+  }, [visible, hasPermission, requestPermission]);
 
   const toggleCamera = () => {
     setCameraPosition(prev => prev === 'back' ? 'front' : 'back');
@@ -43,8 +43,7 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
       
       onPictureTaken(resizedImage.uri);
       onClose();
-    } catch (err) {
-      console.error(err);
+    } catch {
     } finally {
       setIsProcessing(false);
     }

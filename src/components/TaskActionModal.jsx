@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   Modal,
   View,
@@ -16,9 +16,14 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {launchImageLibrary} from 'react-native-image-picker';
 import {Video as VideoCompressor, createVideoThumbnail} from 'react-native-compressor';
+import RNFS from 'react-native-fs';
 import appTheme from '../theme/appTheme';
 import ReusableCamera from './ReusableCamera';
 import {useAppFeedback} from './AppFeedback';
+import {getData} from '../firebase/firebaseService';
+import {loadLoginSession} from '../services/sessionService';
+import {saveTaskSubmission} from '../services/taskService';
+import {beginAppStateSuppression} from '../services/appStateGuard';
 
 const inlineToastStyles = {
   warning: {
@@ -59,9 +64,57 @@ const inlineToastStyles = {
   },
 };
 
-const TaskActionModal = ({visible, onClose, mode}) => {
+const TARGET_VIDEO_MAX_BYTES = 15 * 1024 * 1024;
+const VIDEO_COMPRESSION_STEPS = [720, 540, 480, 360];
+
+const getFileSizeBytes = async uri => {
+  const path = String(uri || '').replace(/^file:\/\//, '');
+  const stats = await RNFS.stat(path);
+  return Number(stats?.size || 0);
+};
+
+const compressVideoForUpload = async videoUri => {
+  let bestResult = {
+    uri: videoUri,
+    sizeBytes: await getFileSizeBytes(videoUri),
+    maxSize: null,
+  };
+
+  for (const maxSize of VIDEO_COMPRESSION_STEPS) {
+    try {
+      const compressedUri = await VideoCompressor.compress(videoUri, {
+        compressionMethod: 'auto',
+        maxSize,
+        minimumFileSizeForCompress: 0,
+      });
+
+      const finalUri = compressedUri || videoUri;
+      const sizeBytes = await getFileSizeBytes(finalUri);
+      const candidate = {uri: finalUri, sizeBytes, maxSize};
+
+      if (sizeBytes < bestResult.sizeBytes) {
+        bestResult = candidate;
+      }
+
+      if (sizeBytes <= TARGET_VIDEO_MAX_BYTES) {
+        return candidate;
+      }
+    } catch {
+    }
+  }
+
+  return bestResult;
+};
+
+const TaskActionModal = ({visible, onClose, onSaved, mode, taskOptions = [], initialTask = null}) => {
   const {showAlert, showToast} = useAppFeedback();
   const [selectedTaskParam, setSelectedTaskParam] = useState(null);
+  const [selectedTaskMeta, setSelectedTaskMeta] = useState(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [taskChoices, setTaskChoices] = useState([]);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [optionsError, setOptionsError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
   const [ward, setWard] = useState('');
   const [participants, setParticipants] = useState('');
   const [remark, setRemark] = useState('');
@@ -77,11 +130,8 @@ const TaskActionModal = ({visible, onClose, mode}) => {
 
   useEffect(() => {
     if (visible) {
-      if (mode === 'pick_task') {
-        setSelectedTaskParam('Pending inspection in Zone B');
-      } else {
-        setSelectedTaskParam(null);
-      }
+      setDropdownOpen(false);
+      setOptionsError('');
       setFieldErrors({});
       setInlineToast(null);
     } else {
@@ -90,6 +140,12 @@ const TaskActionModal = ({visible, onClose, mode}) => {
       setRemark('');
       setImages([]);
       setVideos([]);
+      setSelectedTaskParam(null);
+      setSelectedTaskMeta(null);
+      setDropdownOpen(false);
+      setTaskChoices([]);
+      setOptionsLoading(false);
+      setOptionsError('');
       setFieldErrors({});
       setInlineToast(null);
     }
@@ -126,8 +182,281 @@ const TaskActionModal = ({visible, onClose, mode}) => {
     }, 2200);
   };
 
-  const handleSave = () => {
-    if (mode === 'pick_task' && !selectedTaskParam) {
+  const normalizedTaskOptions = useMemo(() => {
+    return (Array.isArray(taskChoices) ? taskChoices : [])
+      .map((item, index) => {
+        if (!item) {
+          return null;
+        }
+
+        const title = String(item.title ?? item.name ?? item.taskName ?? item.TaskName ?? item.label ?? '').trim();
+        const id = String(item.id ?? item.key ?? item.taskId ?? item.TaskId ?? index).trim();
+
+        if (!title) {
+          return null;
+        }
+
+        return {
+          id: id || `${index}`,
+          title,
+          priority: String(item.priority ?? item.taskPriority ?? item.TaskPriority ?? '').trim(),
+          description: String(item.description ?? item.desc ?? item.taskDesc ?? item.TaskDesc ?? '').trim(),
+          type: String(item.type ?? item.taskType ?? item.TaskType ?? '').trim(),
+          originalPath: item.originalPath || null,
+        };
+      })
+      .filter(Boolean);
+  }, [taskChoices]);
+
+  const pickTaskOptions = useMemo(() => {
+    return (Array.isArray(taskOptions) ? taskOptions : [])
+      .map((item, index) => {
+        if (!item) {
+          return null;
+        }
+
+        const title = String(item.title ?? item.name ?? item.taskName ?? item.TaskName ?? item.label ?? '').trim();
+        const id = String(item.id ?? item.key ?? item.taskId ?? item.TaskId ?? index).trim();
+
+        if (!title) {
+          return null;
+        }
+
+        return {
+          id: id || `${index}`,
+          title,
+          description: String(item.description ?? item.desc ?? item.taskDesc ?? item.TaskDesc ?? item.details ?? '').trim(),
+          type: String(item.type ?? item.taskType ?? item.TaskType ?? '').trim(),
+          priority: String(item.priority ?? item.taskPriority ?? item.TaskPriority ?? '').trim(),
+          originalPath: item.originalPath || null,
+        };
+      })
+      .filter(Boolean);
+  }, [taskOptions]);
+
+  const buildTaskChoices = useCallback(async () => {
+    const session = await loadLoginSession();
+    const userId = String(session?.loginId || session?.employee?.userId || session?.employee?.id || '').trim();
+
+    if (!userId) {
+      return [];
+    }
+
+    const pushUnique = (list, item) => {
+      const title = String(item?.title ?? item?.name ?? item?.taskName ?? item?.TaskName ?? '').trim();
+      if (!title) {
+        return list;
+      }
+
+      const exists = list.some(existing => existing.title.toLowerCase() === title.toLowerCase());
+      if (!exists) {
+        list.push({
+          title,
+          id: String(item?.id ?? item?.key ?? item?.taskId ?? title),
+          description: String(item?.description ?? item?.desc ?? item?.taskDesc ?? item?.TaskDesc ?? '').trim(),
+          type: String(item?.type ?? item?.taskType ?? item?.TaskType ?? '').trim(),
+          priority: String(item?.priority ?? item?.taskPriority ?? item?.TaskPriority ?? '').trim(),
+        });
+      }
+
+      return list;
+    };
+
+    const getCurrentDateParts = () => {
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const currentDate = `${now.getFullYear()}-${month}-${day}`;
+      return {currentDate};
+    };
+
+    if (mode === 'add_kpi') {
+      const dateParts = getCurrentDateParts();
+      const kpiPayload = await getData(`IECData/IECKPITasks/${userId}`);
+      const priorityPayload = await getData(`IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}`);
+
+      const choices = [];
+
+      if (Array.isArray(kpiPayload)) {
+        kpiPayload.forEach((item, index) => {
+          if (item && typeof item === 'object') {
+            pushUnique(choices, {...item, id: item.id ?? item.key ?? index, priority: 'low', type: item.type ?? item.taskType ?? item.TaskType ?? 'KPI', originalPath: `IECData/IECKPITasks/${userId}/${index}`});
+            return;
+          }
+
+          const title = String(item ?? '').trim();
+          if (title) {
+            pushUnique(choices, {title, id: `${index}`, priority: 'low', type: 'KPI', originalPath: `IECData/IECKPITasks/${userId}/${index}`});
+          }
+        });
+      } else if (kpiPayload && typeof kpiPayload === 'object') {
+        Object.entries(kpiPayload).forEach(([key, value]) => {
+          if (value && typeof value === 'object') {
+            pushUnique(choices, {...value, id: value.id ?? value.key ?? key, priority: 'low', type: value.type ?? value.taskType ?? value.TaskType ?? 'KPI', originalPath: `IECData/IECKPITasks/${userId}/${key}`});
+            return;
+          }
+
+          const title = String(value ?? '').trim();
+          if (title) {
+            pushUnique(choices, {title, id: key, priority: 'low', type: 'KPI', originalPath: `IECData/IECKPITasks/${userId}/${key}`});
+          }
+        });
+      }
+
+      if (priorityPayload && typeof priorityPayload === 'object') {
+        Object.entries(priorityPayload).forEach(([groupKey, groupValue]) => {
+          if (!groupValue || typeof groupValue !== 'object') {
+            return;
+          }
+
+          Object.entries(groupValue).forEach(([taskKey, taskValue]) => {
+            if (taskKey === 'lastKey') {
+              return;
+            }
+
+            if (taskValue && typeof taskValue === 'object') {
+              const compositeId = `${groupKey}/${taskKey}`;
+              pushUnique(choices, {
+                title: String(taskValue.task ?? taskValue.name ?? taskValue.title ?? taskValue.desc ?? taskValue.description ?? '').trim(),
+                id: taskValue.id ?? taskValue.key ?? compositeId,
+                description: String(taskValue.desc ?? taskValue.description ?? taskValue.TaskDesc ?? '').trim(),
+                type: 'Priority',
+                priority: 'high',
+                originalPath: `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}/${groupKey}/${taskKey}`,
+              });
+            }
+          });
+        });
+      }
+
+      return choices;
+    }
+
+    if (mode === 'add_other') {
+      const payload = await getData('IECData/Tasks');
+      const choices = [];
+
+      if (payload && typeof payload === 'object') {
+        Object.entries(payload).forEach(([key, value]) => {
+          if (key === 'lastKey') {
+            return;
+          }
+
+          if (value && typeof value === 'object') {
+            const status = String(value.status ?? value.Status ?? '');
+            const isDeleted = String(value.isDeleted ?? value.IsDeleted ?? '').toLowerCase();
+
+            if (status !== '1' || isDeleted === 'yes') {
+              return; // Skip inactive or deleted tasks
+            }
+
+            const title = String(value.name ?? value.title ?? value.taskName ?? value.TaskName ?? '').trim();
+            if (title) {
+              pushUnique(choices, {
+                title,
+                id: value.id ?? value.key ?? key,
+                description: String(value.desc ?? value.description ?? value.TaskDesc ?? '').trim(),
+                type: String(value.type ?? value.taskType ?? value.TaskType ?? 'Other').trim() || 'Other',
+                priority: String(value.priority ?? value.taskPriority ?? value.TaskPriority ?? 'low').trim() || 'low',
+              });
+            }
+            return;
+          }
+
+          const title = String(value ?? '').trim();
+          if (title) {
+            pushUnique(choices, {title, id: key, priority: 'low', type: 'Other'});
+          }
+        });
+      }
+
+      return choices;
+    }
+
+    return [];
+  }, [mode]);
+
+  useEffect(() => {
+    if (!visible || mode !== 'pick_task') {
+      return;
+    }
+
+    const resolvedInitialTask = initialTask
+      ? {
+          id: String(initialTask.id ?? initialTask.key ?? initialTask.taskId ?? initialTask.TaskId ?? initialTask.title ?? '').trim(),
+          title: String(initialTask.title ?? initialTask.name ?? initialTask.taskName ?? initialTask.TaskName ?? initialTask.label ?? '').trim(),
+          description: String(initialTask.description ?? initialTask.desc ?? initialTask.taskDesc ?? initialTask.TaskDesc ?? initialTask.details ?? '').trim(),
+          type: String(initialTask.type ?? initialTask.taskType ?? initialTask.TaskType ?? '').trim(),
+          priority: String(initialTask.priority ?? initialTask.taskPriority ?? initialTask.TaskPriority ?? '').trim(),
+          originalPath: initialTask.originalPath || null,
+        }
+      : null;
+
+    const autoTask = resolvedInitialTask?.title ? resolvedInitialTask : pickTaskOptions[0] || null;
+
+    setSelectedTaskParam(autoTask?.title || null);
+    setSelectedTaskMeta(autoTask || null);
+    setDropdownOpen(false);
+  }, [visible, mode, initialTask, pickTaskOptions]);
+
+  useEffect(() => {
+    if (!visible || mode === 'pick_task') {
+      return;
+    }
+
+    let isActive = true;
+
+    const loadChoices = async () => {
+      setOptionsLoading(true);
+      setOptionsError('');
+      try {
+        const nextChoices = await buildTaskChoices();
+        if (isActive) {
+          setTaskChoices(nextChoices);
+          setSelectedTaskParam(null);
+        }
+      } catch (error) {
+        if (isActive) {
+          setTaskChoices([]);
+          setOptionsError(error?.message || 'Unable to load tasks.');
+        }
+      } finally {
+        if (isActive) {
+          setOptionsLoading(false);
+        }
+      }
+    };
+
+    loadChoices();
+
+    return () => {
+      isActive = false;
+    };
+  }, [visible, mode, buildTaskChoices]);
+
+  const handleSelectTask = item => {
+    if (item.title === 'Select task') {
+      setSelectedTaskParam(null);
+      setSelectedTaskMeta(null);
+      setDropdownOpen(false);
+      return;
+    }
+
+    setSelectedTaskParam(item.title);
+    setSelectedTaskMeta(item);
+    setDropdownOpen(false);
+    setFieldErrors(prev => {
+      if (!prev.selectedTask) {
+        return prev;
+      }
+      const nextErrors = {...prev};
+      delete nextErrors.selectedTask;
+      return nextErrors;
+    });
+  };
+
+  const handleSave = async () => {
+    if (!selectedTaskParam) {
       setFieldErrors({selectedTask: true});
       showInlineToast('Please select a task.', 'warning');
       return;
@@ -157,9 +486,47 @@ const TaskActionModal = ({visible, onClose, mode}) => {
       return;
     }
 
-    setFieldErrors({});
-    showToast('Task details have been submitted.', 'success');
-    onClose();
+    setIsSaving(true);
+
+    try {
+      const resolvedTask =
+        selectedTaskMeta ||
+        pickTaskOptions.find(item => item.title === selectedTaskParam) ||
+        normalizedTaskOptions.find(item => item.title === selectedTaskParam) ||
+        {title: selectedTaskParam};
+      const taskSourcePath = resolvedTask.originalPath || resolvedTask.raw?.originalPath || null;
+      const taskWithoutOriginalPath = {...resolvedTask};
+      delete taskWithoutOriginalPath.originalPath;
+      delete taskWithoutOriginalPath.raw;
+
+      await saveTaskSubmission({
+        mode,
+        selectedTask: {
+          ...taskWithoutOriginalPath,
+          sourcePath: taskSourcePath,
+        },
+        ward: ward.trim(),
+        participants: participants.trim(),
+        remark: remark.trim(),
+        images,
+        videos,
+        location: {
+          latitude: 0,
+          longitude: 0,
+          address: 'Location not captured',
+        },
+      });
+
+      setFieldErrors({});
+      showToast('Task details have been submitted.', 'success');
+      onSaved?.();
+      onClose();
+    } catch (error) {
+      showInlineToast(error?.message || 'Unable to save task.', 'error');
+      showAlert({title: 'Save Task', message: error?.message || 'Unable to save task.'});
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const captureImage = () => {
@@ -180,6 +547,7 @@ const TaskActionModal = ({visible, onClose, mode}) => {
       return;
     }
     try {
+      beginAppStateSuppression(12000);
       const result = await launchImageLibrary({
         mediaType: 'video',
         videoQuality: 'high',
@@ -189,25 +557,20 @@ const TaskActionModal = ({visible, onClose, mode}) => {
       if (result.didCancel || result.errorCode || !result.assets) return;
 
       const videoUri = result.assets[0].uri;
-      const compressedUri = await VideoCompressor.compress(videoUri, {
-        compressionMethod: 'auto',
-        maxSize: 720,
-        minimumFileSizeForCompress: 0,
-      });
+      const compressedVideo = await compressVideoForUpload(videoUri);
+      const finalVideoUri = compressedVideo.uri || videoUri;
+      const finalVideoSizeBytes = compressedVideo.sizeBytes || (await getFileSizeBytes(finalVideoUri));
 
-      const finalVideoUri = compressedUri || videoUri;
       let thumbnailUri = null;
 
       try {
         const thumbnail = await createVideoThumbnail(finalVideoUri);
         thumbnailUri = thumbnail?.path || null;
-      } catch (thumbnailError) {
-        console.warn('Thumbnail error: ', thumbnailError);
+      } catch {
       }
 
-      setVideos(prev => [...prev, {uri: finalVideoUri, thumbnailUri}]);
-    } catch (err) {
-      console.warn('Video upload error: ', err);
+      setVideos(prev => [...prev, {uri: finalVideoUri, thumbnailUri, sizeBytes: finalVideoSizeBytes}]);
+    } catch {
       showAlert({title: 'Video Error', message: 'Video could not be processed. Please try again.'});
     }
   };
@@ -249,33 +612,96 @@ const TaskActionModal = ({visible, onClose, mode}) => {
 
           <KeyboardAvoidingView style={{flex: 1}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Selected Task</Text>
-                <TouchableOpacity
-                  style={[styles.pickerSelector, fieldErrors.selectedTask ? styles.inputError : null]}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    if (mode === 'pick_task') return;
-                  }}>
-                  <View style={styles.pickerContent}>
+              <View style={[styles.inputGroup, { zIndex: 100, ...(Platform.OS === 'android' ? { elevation: dropdownOpen ? 10 : 0 } : {}) }]}>
+                <Text style={styles.label}>Task <Text style={styles.reqStar}>*</Text></Text>
+                {mode !== 'pick_task' && <Text style={styles.dropdownHint}>Tap the field to open the dropdown</Text>}
+                {mode === 'pick_task' ? (
+                  <View style={[styles.pickerSelector, styles.pickerSelectorLocked, fieldErrors.selectedTask ? styles.inputError : null]}>
+                    <View style={styles.pickerContent}>
+                      <MaterialCommunityIcons
+                        name="clipboard-check-outline"
+                        size={20}
+                        color={appTheme.colors.brand.primary}
+                        style={styles.pickerIcon}
+                      />
+                      <View style={styles.pickerTextWrap}>
+                        <Text style={styles.pickerText}>{selectedTaskParam || 'Selected task'}</Text>
+                      </View>
+                    </View>
                     <MaterialCommunityIcons
-                      name="clipboard-check-outline"
-                      size={20}
-                      color={appTheme.colors.brand.primary}
-                      style={{marginRight: 10}}
-                    />
-                    <Text style={[styles.pickerText, !selectedTaskParam && styles.pickerPlaceholder]}>
-                      {selectedTaskParam ? selectedTaskParam : getDropdownPlaceholder()}
-                    </Text>
-                  </View>
-                  {mode !== 'pick_task' && (
-                    <MaterialCommunityIcons
-                      name="chevron-down"
-                      size={22}
+                      name="lock-outline"
+                      size={18}
                       color={appTheme.colors.neutral.textMuted}
                     />
-                  )}
-                </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.dropdownWrap}>
+                    <TouchableOpacity
+                      style={[styles.pickerSelector, fieldErrors.selectedTask ? styles.inputError : null]}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setDropdownOpen(prev => !prev);
+                      }}>
+                      <View style={styles.pickerContent}>
+                        <MaterialCommunityIcons
+                          name="clipboard-check-outline"
+                          size={20}
+                          color={appTheme.colors.brand.primary}
+                          style={styles.pickerIcon}
+                        />
+                        <View style={styles.pickerTextWrap}>
+                          <Text style={[styles.pickerText, !selectedTaskParam && styles.pickerPlaceholder]}>
+                            {selectedTaskParam ? selectedTaskParam : getDropdownPlaceholder()}
+                          </Text>
+                        </View>
+                      </View>
+                      <MaterialCommunityIcons
+                        name={dropdownOpen ? "chevron-up" : "chevron-down"}
+                        size={22}
+                        color={appTheme.colors.neutral.textMuted}
+                      />
+                    </TouchableOpacity>
+                    
+                    {dropdownOpen && (
+                      <View style={styles.dropdownPanel}>
+                        <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={true} contentContainerStyle={styles.dropdownScrollContent}>
+                          {optionsLoading ? (
+                            <View style={styles.dropdownEmpty}>
+                              <Text style={styles.dropdownEmptyText}>Loading tasks...</Text>
+                            </View>
+                          ) : optionsError ? (
+                            <View style={styles.dropdownEmpty}>
+                              <Text style={styles.dropdownEmptyText}>{optionsError}</Text>
+                            </View>
+                          ) : normalizedTaskOptions.length ? (
+                            normalizedTaskOptions.map(item => {
+                              const isSelected = selectedTaskParam === item.title;
+                              return (
+                                <TouchableOpacity
+                                  key={item.id}
+                                  style={[
+                                    styles.dropdownItem,
+                                    isSelected ? styles.dropdownItemActive : null,
+                                  ]}
+                                  activeOpacity={0.75}
+                                  onPress={() => handleSelectTask(item)}>
+                                  <Text style={[styles.dropdownItemTitle, isSelected && styles.dropdownItemTitleActive]}>{item.title}</Text>
+                                  {isSelected && (
+                                    <MaterialCommunityIcons name="check-circle" size={20} color={appTheme.colors.brand.primary} />
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })
+                          ) : (
+                            <View style={styles.dropdownEmpty}>
+                              <Text style={styles.dropdownEmptyText}>No tasks available</Text>
+                            </View>
+                          )}
+                        </ScrollView>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
 
               <View style={styles.rowGrid}>
@@ -435,8 +861,8 @@ const TaskActionModal = ({visible, onClose, mode}) => {
           ) : null}
 
           <View style={styles.bottomBar}>
-            <TouchableOpacity style={styles.submitBtn} onPress={handleSave} activeOpacity={0.85}>
-              <Text style={styles.submitBtnText}>Submit Task</Text>
+            <TouchableOpacity style={[styles.submitBtn, isSaving && styles.submitBtnDisabled]} onPress={handleSave} activeOpacity={0.85} disabled={isSaving}>
+              <Text style={styles.submitBtnText}>{isSaving ? 'Saving...' : 'Submit Task'}</Text>
               <MaterialCommunityIcons name="arrow-right" size={20} color="#FFF" style={{marginLeft: 8}} />
             </TouchableOpacity>
           </View>
@@ -553,20 +979,103 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  pickerSelectorLocked: {
+    opacity: 0.96,
+    backgroundColor: '#F8FAFC',
+  },
   pickerContent: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
   },
+  pickerIcon: {
+    marginRight: 10,
+  },
+  pickerTextWrap: {
+    flex: 1,
+    justifyContent: 'center', // added for perfect centering
+  },
   pickerText: {
     fontSize: 16,
     color: '#0F172A',
     fontWeight: '600',
-    flex: 1,
+    // Removed flex: 1 so text height is natural, guaranteeing perfect vertical alignment with the icon
+  },
+  pickerSubText: {
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+    color: '#64748B',
   },
   pickerPlaceholder: {
     color: '#94A3B8',
     fontWeight: '500',
+  },
+  dropdownWrap: {
+    position: 'relative',
+    zIndex: 999,
+  },
+  dropdownPanel: {
+    position: 'absolute',
+    top: 64,
+    left: 0,
+    right: 0,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    backgroundColor: '#FFF',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    shadowOffset: {width: 0, height: 6},
+    elevation: 10,
+    zIndex: 1000,
+    maxHeight: 280, // Safe maximum height to avoid leaving the screen
+  },
+  dropdownScrollContent: {
+    paddingTop: 4,
+    paddingBottom: 20, // Extra padding so the last item isn't cut off inside constrained scrollview
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F8FAFC',
+    backgroundColor: '#FFF',
+  },
+  dropdownItemActive: {
+    backgroundColor: 'rgba(18, 59, 74, 0.08)', // Selection fill color
+  },
+  dropdownItemTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#334155',
+    flex: 1,
+  },
+  dropdownItemTitleActive: {
+    color: '#123B4A',
+    fontWeight: '800',
+  },
+  dropdownHint: {
+    marginBottom: 6,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  dropdownEmpty: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dropdownEmptyText: {
+    color: '#64748B',
+    fontSize: 14,
+    fontWeight: '600',
   },
   divider: {
     height: 1.5,
@@ -763,6 +1272,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     height: 56,
     borderRadius: 16,
+  },
+  submitBtnDisabled: {
+    opacity: 0.72,
   },
   submitBtnText: {
     color: '#FFF',

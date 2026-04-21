@@ -1,4 +1,4 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {
   FlatList,
   Modal,
@@ -12,177 +12,406 @@ import {
 import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
+import {getData} from '../firebase/firebaseService';
+import {loadLoginSession} from '../services/sessionService';
 
-const TASKS = [
-  {
-    id: '1',
-    title: 'Ward inspection review in Zone A',
-    type: 'KPI Task',
-    status: 'Pending',
-    priority: 'High',
-    date: '2026-04-14',
-    address: 'Zone A, Ward 14',
-    remark: 'Pending approval from field executive.',
-    images: 3,
-    videos: 1,
-  },
-  {
-    id: '2',
-    title: 'Meter reading follow-up for Block B',
-    type: 'Meter Reading',
-    status: 'Approved',
-    priority: 'Medium',
-    date: '2026-04-14',
-    address: 'Block B, Sector 9',
-    remark: 'Completed with all supporting media uploaded.',
-    images: 5,
-    videos: 2,
-  },
-  {
-    id: '3',
-    title: 'Zone summary and compliance check',
-    type: 'Summary',
-    status: 'Completed',
-    priority: 'Low',
-    date: '2026-04-13',
-    address: 'Control Room',
-    remark: 'Final checklist submitted.',
-    images: 2,
-    videos: 0,
-  },
-  {
-    id: '4',
-    title: 'Resident complaint verification',
-    type: 'Complaint',
-    status: 'Not Approved',
-    priority: 'High',
-    date: '2026-04-12',
-    address: 'Ward 7, Main Road',
-    remark: 'Rework requested due to missing evidence.',
-    images: 1,
-    videos: 1,
-  },
-  {
-    id: '5',
-    title: 'Drainage inspection near Market Road',
-    type: 'KPI Task',
-    status: 'Pending',
-    priority: 'Medium',
-    date: '2026-04-14',
-    address: 'Market Road, Sector 3',
-    remark: 'Field notes pending review.',
-    images: 2,
-    videos: 0,
-  },
-  {
-    id: '6',
-    title: 'Water meter audit for Block C',
-    type: 'Meter Reading',
-    status: 'Approved',
-    priority: 'High',
-    date: '2026-04-13',
-    address: 'Block C, Lane 5',
-    remark: 'Approved after cross verification.',
-    images: 4,
-    videos: 1,
-  },
-  {
-    id: '7',
-    title: 'Garbage collection compliance visit',
-    type: 'Summary',
-    status: 'Completed',
-    priority: 'Low',
-    date: '2026-04-12',
-    address: 'Ward 2, Civic Center',
-    remark: 'All checkpoints marked completed.',
-    images: 3,
-    videos: 0,
-  },
-  {
-    id: '8',
-    title: 'Street light issue review',
-    type: 'Complaint',
-    status: 'Not Approved',
-    priority: 'High',
-    date: '2026-04-11',
-    address: 'Main Bazar Junction',
-    remark: 'Image evidence was incomplete.',
-    images: 2,
-    videos: 1,
-  },
-  {
-    id: '9',
-    title: 'Public park cleanliness check',
-    type: 'KPI Task',
-    status: 'Pending',
-    priority: 'Low',
-    date: '2026-04-13',
-    address: 'City Park, North Gate',
-    remark: 'Awaiting supervisor remarks.',
-    images: 1,
-    videos: 0,
-  },
-  {
-    id: '10',
-    title: 'Commercial zone meter report',
-    type: 'Meter Reading',
-    status: 'Approved',
-    priority: 'Medium',
-    date: '2026-04-11',
-    address: 'Commercial Block D',
-    remark: 'Report submitted and approved.',
-    images: 5,
-    videos: 2,
-  },
-  {
-    id: '11',
-    title: 'Roadside drainage clean-up audit',
-    type: 'Summary',
-    status: 'Completed',
-    priority: 'Low',
-    date: '2026-04-14',
-    address: 'Sector 6, Outer Ring',
-    remark: 'Audit closed after final inspection.',
-    images: 2,
-    videos: 1,
-  },
-  {
-    id: '12',
-    title: 'Unauthorized dumping report',
-    type: 'Complaint',
-    status: 'Not Approved',
-    priority: 'High',
-    date: '2026-04-12',
-    address: 'Lake View Road',
-    remark: 'Location tag was not captured clearly.',
-    images: 3,
-    videos: 1,
-  },
-  {
-    id: '13',
-    title: 'Transformer area safety verification',
-    type: 'KPI Task',
-    status: 'Pending',
-    priority: 'Medium',
-    date: '2026-04-14',
-    address: 'Industrial Zone A',
-    remark: 'Safety checklist in progress.',
-    images: 4,
-    videos: 0,
-  },
-  {
-    id: '14',
-    title: 'Revenue collection summary check',
-    type: 'Meter Reading',
-    status: 'Approved',
-    priority: 'Low',
-    date: '2026-04-13',
-    address: 'Finance Office',
-    remark: 'Entries verified and locked.',
-    images: 2,
-    videos: 0,
-  },
-];
+const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const hasTaskData = value => {
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+
+  if (!isPlainObject(value)) {
+    return false;
+  }
+
+  return Object.keys(value).length > 0;
+};
+
+const getFirstText = (...values) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+  }
+
+  return '';
+};
+
+const resolveTaskStatus = task => {
+  const approvedRaw = getFirstText(
+    task?.approvedStatus,
+    task?.ApprovedStatus,
+    task?.approvalStatus,
+    task?.ApprovalStatus,
+  ).toLowerCase();
+
+  if (approvedRaw) {
+    return approvedRaw === '0' || approvedRaw === 'false' ? 'Not Approved' : 'Approved';
+  }
+
+  const rawStatus = getFirstText(task?.status, task?.Status, task?.taskStatus, task?.TaskStatus).toLowerCase();
+  if (!rawStatus) {
+    return 'Pending';
+  }
+
+  if (rawStatus.includes('approve')) {
+    return 'Approved';
+  }
+
+  if (rawStatus.includes('reject') || rawStatus.includes('not approved')) {
+    return 'Not Approved';
+  }
+
+  return 'Pending';
+};
+
+const resolveTaskPriority = task => {
+  const rawPriority = getFirstText(
+    task?.priority,
+    task?.Priority,
+    task?.taskPriority,
+    task?.TaskPriority,
+    task?.importance,
+    task?.Importance,
+  ).toLowerCase();
+
+  if (!rawPriority) {
+    return 'Medium';
+  }
+
+  if (rawPriority.includes('high')) {
+    return 'High';
+  }
+
+  if (rawPriority.includes('low')) {
+    return 'Low';
+  }
+
+  if (rawPriority.includes('medium')) {
+    return 'Medium';
+  }
+
+  return rawPriority.charAt(0).toUpperCase() + rawPriority.slice(1);
+};
+
+const buildTaskTitle = task => {
+  return (
+    getFirstText(
+      task?.title,
+      task?.Title,
+      task?.taskTitle,
+      task?.TaskTitle,
+      task?.name,
+      task?.Name,
+      task?.subject,
+      task?.Subject,
+      task?.description,
+      task?.Description,
+      task?.remarks,
+      task?.Remarks,
+    ) || 'Untitled Task'
+  );
+};
+
+const buildTaskType = (task, fallbackType) => {
+  return (
+    getFirstText(
+      task?.type,
+      task?.Type,
+      task?.taskType,
+      task?.TaskType,
+      task?.category,
+      task?.Category,
+    ) || fallbackType
+  );
+};
+
+const resolveCatalogTaskTitle = (catalog, taskKey) => {
+  if (!taskKey || !catalog || typeof catalog !== 'object') {
+    return '';
+  }
+
+  const entry = catalog[taskKey];
+  if (!entry) {
+    return '';
+  }
+
+  if (typeof entry === 'string') {
+    return entry.trim();
+  }
+
+  return getFirstText(entry?.name, entry?.title, entry?.taskName, entry?.TaskName, entry?.label);
+};
+
+const compactArrayForLog = value => {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  return value.filter(item => item !== null && item !== undefined);
+};
+
+const getTaskStatusRank = status => {
+  const normalized = getFirstText(status).toLowerCase();
+  if (normalized.includes('completed')) return 3;
+  if (normalized.includes('approved')) return 2;
+  if (normalized.includes('not approved') || normalized.includes('rejected')) return 1;
+  if (normalized.includes('pending')) return 0;
+  return 0;
+};
+
+const TASK_FIELD_KEYS = new Set([
+  '_at',
+  'address',
+  'approvedAt',
+  'approvedBy',
+  'approvedStatus',
+  'ApprovedStatus',
+  'approvalStatus',
+  'ApprovalStatus',
+  'completionStatus',
+  'CompletionStatus',
+  'date',
+  'Date',
+  'image1',
+  'image2',
+  'image3',
+  'image4',
+  'image5',
+  'latLng',
+  'noOfParticipants',
+  'remark',
+  'status',
+  'Status',
+  'taskCategory',
+  'taskStatus',
+  'TaskStatus',
+  'taskType',
+  'TaskType',
+  'title',
+  'Title',
+  'type',
+  'Type',
+  'wardNo',
+  'video1',
+  'video2',
+]);
+
+const isTaskLeafNode = item => {
+  if (!isPlainObject(item)) {
+    return false;
+  }
+
+  return Object.keys(item).some(key => TASK_FIELD_KEYS.has(key));
+};
+
+const isTraversableNode = value => Array.isArray(value) || isPlainObject(value);
+
+const getCurrentDateParts = date => {
+  const year = String(date.getFullYear());
+  const month = date.toLocaleString('en-US', {month: 'long'});
+  const monthPadded = String(date.getMonth() + 1).padStart(2, '0');
+  const dayPadded = String(date.getDate()).padStart(2, '0');
+
+  return {
+    year,
+    month,
+    isoDate: `${year}-${monthPadded}-${dayPadded}`,
+  };
+};
+
+const readFirstExistingPath = async paths => {
+  for (const path of paths) {
+    console.log('[TaskMonitoring] checking path:', path);
+    const value = await getData(path);
+    if (hasTaskData(value)) {
+      console.log('[TaskMonitoring] path hit:', {
+        path,
+        keys: Array.isArray(value)
+          ? value
+              .map((item, index) => (item === null || item === undefined ? null : String(index)))
+              .filter(Boolean)
+          : Object.keys(value),
+        value: compactArrayForLog(value),
+      });
+      return {path, value};
+    }
+
+    console.log('[TaskMonitoring] path empty:', path);
+  }
+
+  console.log('[TaskMonitoring] no matching path found:', paths);
+  return {path: null, value: null};
+};
+
+const flattenTaskNode = (value, fallbackType, sourceLabel, taskCatalog = null) => {
+  const seen = new Set();
+  const walk = (node, trail = []) => {
+    if (node === null || node === undefined) {
+      return [];
+    }
+
+    const entries = Array.isArray(node)
+      ? node
+          .map((item, index) => [String(index), item])
+          .filter(([, item]) => item !== null && item !== undefined)
+      : isPlainObject(node)
+        ? Object.entries(node)
+        : [];
+
+    return entries.flatMap(([key, item], index) => {
+      const nextTrail = [...trail, key];
+
+      if (isTraversableNode(item)) {
+        if (isTaskLeafNode(item)) {
+          const taskKey = getFirstText(nextTrail.length >= 2 ? nextTrail[nextTrail.length - 2] : '', key);
+          const id = getFirstText(item?.id, item?.Id, item?.taskId, item?.TaskId, key, `${sourceLabel}-${index}`);
+          const title =
+            buildTaskTitle(item) ||
+            resolveCatalogTaskTitle(taskCatalog, taskKey) ||
+            resolveCatalogTaskTitle(taskCatalog, id) ||
+            taskKey ||
+            id;
+          const status = resolveTaskStatus(item);
+          const type = buildTaskType(item, fallbackType);
+          const priority = resolveTaskPriority(item);
+          const date = getFirstText(item?.date, item?.Date, item?.taskDate, item?.TaskDate, item?.createdOn, item?.CreatedOn);
+
+          console.log('[TaskMonitoring] status resolve:', {
+            sourceLabel,
+            path: nextTrail.join('/'),
+            id,
+            taskKey,
+            rawFields: {
+              _at: item?._at,
+              address: item?.address,
+              approvedAt: item?.approvedAt,
+              approvedBy: item?.approvedBy,
+              approvedStatus: item?.approvedStatus,
+              approvalStatus: item?.approvalStatus,
+              completionStatus: item?.completionStatus,
+              latLng: item?.latLng,
+              noOfParticipants: item?.noOfParticipants,
+              remark: item?.remark,
+              status: item?.status,
+              taskCategory: item?.taskCategory,
+              type: item?.type,
+              wardNo: item?.wardNo,
+              video1: item?.video1,
+              video2: item?.video2,
+            },
+            resolvedStatus: status,
+          });
+
+          const signature = `${sourceLabel}:${nextTrail.join('/')}:${id}:${title}:${status}:${type}`;
+          if (seen.has(signature)) {
+            console.log('[TaskMonitoring] duplicate leaf skipped:', signature);
+            return [];
+          }
+          seen.add(signature);
+
+          return [
+            {
+              id,
+              taskKey,
+              listKey: `${sourceLabel}:${nextTrail.join('/')}:${id}`,
+              title,
+              status,
+            type,
+              priority,
+              date,
+              address: getFirstText(item?.address, item?.Address, item?.location, item?.Location),
+              remark: getFirstText(item?.remark, item?.Remark, item?.remarks, item?.Remarks),
+              images: Object.keys(item).filter(name => /^image\d+$/i.test(name)).length,
+              videos: Object.keys(item).filter(name => /^video\d+$/i.test(name)).length,
+            },
+          ];
+        }
+
+        return walk(item, nextTrail);
+      }
+
+      const taskKey = getFirstText(nextTrail.length >= 2 ? nextTrail[nextTrail.length - 2] : '', key);
+      const title = getFirstText(item) || resolveCatalogTaskTitle(taskCatalog, taskKey) || taskKey;
+      if (!title) {
+        return [];
+      }
+
+      const id = getFirstText(key, `${sourceLabel}-${index}`);
+      const signature = `${sourceLabel}:${nextTrail.join('/')}:${id}:${title}:Pending:${fallbackType}`;
+      if (seen.has(signature)) {
+        console.log('[TaskMonitoring] duplicate leaf skipped:', signature);
+        return [];
+      }
+      seen.add(signature);
+
+      console.log('[TaskMonitoring] status resolve:', {
+        sourceLabel,
+        path: nextTrail.join('/'),
+        id,
+        taskKey,
+        rawFields: {primitiveValue: item},
+        resolvedStatus: 'Pending',
+      });
+
+      return [
+        {
+          id: getFirstText(key, `${sourceLabel}-${index}`),
+          listKey: `${sourceLabel}:${nextTrail.join('/')}:${getFirstText(key, `${sourceLabel}-${index}`)}`,
+          title,
+          status: 'Pending',
+          type: fallbackType,
+          priority: 'Medium',
+          date: '',
+          address: '',
+          remark: '',
+          images: 0,
+          videos: 0,
+        },
+      ];
+    });
+  };
+
+  return walk(value);
+};
+
+const mergeAssignedTasks = (...taskGroups) => {
+  const merged = new Map();
+
+  taskGroups.flat().forEach(task => {
+    if (!task) {
+      return;
+    }
+
+    const identity = getFirstText(task?.taskKey, task?.id, task?.title).toLowerCase();
+    if (!identity) {
+      return;
+    }
+
+    const existing = merged.get(identity);
+    if (!existing) {
+      merged.set(identity, task);
+      return;
+    }
+
+    const currentRank = getTaskStatusRank(task.status);
+    const existingRank = getTaskStatusRank(existing.status);
+    if (currentRank > existingRank) {
+      merged.set(identity, {...existing, ...task, title: task.title || existing.title});
+      return;
+    }
+
+    merged.set(identity, {...task, ...existing, title: existing.title || task.title});
+  });
+
+  return Array.from(merged.values());
+};
 
 const STATUS_META = {
   Pending: {
@@ -221,7 +450,15 @@ const formatDate = date => {
 };
 
 const formatDisplayDate = value => {
+  if (!value) {
+    return '-';
+  }
+
   const date = typeof value === 'string' ? parseDate(value) : value;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return '-';
+  }
+
   return date.toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'short',
@@ -267,24 +504,165 @@ const TaskMonitoringScreen = ({navigation}) => {
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [tasks, setTasks] = useState([]);
 
   const filteredTasks = useMemo(() => {
-    return TASKS.filter(task => {
+    return tasks.filter(task => {
       const matchesStatus = selectedFilter === 'All' ? true : task.status === selectedFilter;
       const matchesDate = selectedDate ? task.date === selectedDate : true;
       return matchesStatus && matchesDate;
     });
-  }, [selectedFilter, selectedDate]);
+  }, [selectedFilter, selectedDate, tasks]);
 
   const stats = useMemo(() => {
     return {
-      total: TASKS.length,
-      pending: TASKS.filter(task => task.status === 'Pending').length,
-      approved: TASKS.filter(task => task.status === 'Approved').length,
-      notApproved: TASKS.filter(task => task.status === 'Not Approved').length,
-      completed: TASKS.filter(task => task.status === 'Completed').length,
+      total: tasks.length,
+      pending: tasks.filter(task => task.status === 'Pending').length,
+      approved: tasks.filter(task => task.status === 'Approved').length,
+      notApproved: tasks.filter(task => task.status === 'Not Approved').length,
+      completed: tasks.filter(task => task.status === 'Completed').length,
     };
-  }, []);
+  }, [tasks]);
+
+  useEffect(() => {
+    console.log(
+      '[TaskMonitoring] tasks state updated:',
+      tasks.map(task => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        type: task.type,
+        priority: task.priority,
+        date: task.date,
+      })),
+    );
+    console.log('[TaskMonitoring] tasks summary:', {
+      total: tasks.length,
+      pending: tasks.filter(task => task.status === 'Pending').length,
+      approved: tasks.filter(task => task.status === 'Approved').length,
+      completed: tasks.filter(task => task.status === 'Completed').length,
+      notApproved: tasks.filter(task => task.status === 'Not Approved').length,
+    });
+  }, [tasks]);
+
+  useEffect(() => {
+    console.log(
+      '[TaskMonitoring] filtered list updated:',
+      filteredTasks.map(task => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        type: task.type,
+        priority: task.priority,
+        date: task.date,
+      })),
+    );
+    console.log('[TaskMonitoring] filtered summary:', {
+      total: filteredTasks.length,
+      pending: filteredTasks.filter(task => task.status === 'Pending').length,
+      approved: filteredTasks.filter(task => task.status === 'Approved').length,
+      completed: filteredTasks.filter(task => task.status === 'Completed').length,
+      notApproved: filteredTasks.filter(task => task.status === 'Not Approved').length,
+      selectedFilter,
+      selectedDate,
+    });
+  }, [filteredTasks, selectedFilter, selectedDate]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadTasks = async () => {
+      try {
+        const session = await loadLoginSession();
+        const loginId = getFirstText(session?.loginId, session?.employee?.userId, session?.employee?.id, session?.employee?.loginId);
+        console.log('[TaskMonitoring] load start:', {
+          loginId,
+          selectedDate,
+        });
+
+        if (!loginId) {
+          if (isActive) {
+            setTasks([]);
+          }
+          return;
+        }
+
+        const date = parseDate(selectedDate);
+        const dateParts = getCurrentDateParts(date);
+        const kpiPaths = [`IECData/IECKPITasks/${loginId}`];
+        const priorityPaths = [`IECData/IECPriorityTasks/${loginId}/${dateParts.isoDate}`];
+        const currentTaskPaths = [`IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.month}/${dateParts.isoDate}`];
+
+        console.log('[TaskMonitoring] source paths:', {
+          kpiPaths,
+          priorityPaths,
+          currentTaskPaths,
+        });
+
+        const [taskCatalog, kpiResult, priorityResult, currentResult] = await Promise.all([
+          getData('IECData/Tasks'),
+          readFirstExistingPath(kpiPaths),
+          readFirstExistingPath(priorityPaths),
+          readFirstExistingPath(currentTaskPaths),
+        ]);
+
+        console.log('[TaskMonitoring] raw source values:', {
+          taskCatalog,
+          kpiResult,
+          priorityResult,
+          currentResult: {
+            ...currentResult,
+            value: compactArrayForLog(currentResult.value),
+          },
+        });
+
+        const kpiTasks = flattenTaskNode(kpiResult.value, 'KPI Task', 'KPI', kpiResult.path, taskCatalog).map(task => ({
+          ...task,
+          date: task.date || dateParts.isoDate,
+        }));
+        const priorityTasks = flattenTaskNode(priorityResult.value, 'Priority Task', 'Priority', priorityResult.path, taskCatalog).map(task => ({
+          ...task,
+          date: task.date || dateParts.isoDate,
+        }));
+        const statusTasks = flattenTaskNode(currentResult.value, 'Current Task', 'Current', currentResult.path, taskCatalog).map(task => ({
+          ...task,
+          date: task.date || dateParts.isoDate,
+        }));
+        const dedupedTasks = mergeAssignedTasks(kpiTasks, priorityTasks, statusTasks).map(task => ({
+          ...task,
+          date: task.date || dateParts.isoDate,
+        }));
+
+        console.log(
+          '[TaskMonitoring] normalized task list:',
+          dedupedTasks.map(task => ({
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            type: task.type,
+            priority: task.priority,
+            date: task.date,
+          })),
+        );
+
+        if (isActive) {
+          setTasks(dedupedTasks);
+          console.log('[TaskMonitoring] setTasks applied:', dedupedTasks.length);
+        }
+      } catch (error) {
+        if (isActive) {
+          setTasks([]);
+          console.log('[TaskMonitoring] load error:', error?.message || error);
+        }
+      }
+    };
+
+    loadTasks();
+
+    return () => {
+      isActive = false;
+    };
+  }, [selectedDate]);
 
   const calendarDays = useMemo(() => getDaysInMonth(calendarMonth), [calendarMonth]);
 

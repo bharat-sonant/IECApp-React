@@ -4,5 +4,4 @@ export {
   updateData,
   removeData,
   uploadFileToStorage,
-  getDownloadUrl,
 } from './firebaseService';

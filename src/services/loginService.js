@@ -1,7 +1,9 @@
-import {getData} from '../Firebase/firebaseService';
-import {FIREBASE_CONFIG} from '../Firebase/firebaseConfig';
+import {getData} from '../firebase/firebaseService';
+import {FIREBASE_CONFIG} from '../firebase/firebaseConfig';
+import CryptoJS from 'crypto-js';
+import DeviceInfo from 'react-native-device-info';
 
-export const APP_VERSION = '1.0.0.1';
+export const APP_VERSION = DeviceInfo.getVersion() || '1.0.0.1';
 export const LATEST_VERSION_PATH = 'Settings/LatestVersions/IECNativeApp';
 export const AVAILABLE_DESIGNATIONS_PATH = 'Common/IECAvailableDesignations.json';
 
@@ -73,6 +75,18 @@ const normalizeEmployeeDetails = payload => {
   return payload;
 };
 
+const deriveAesKey = userName => CryptoJS.SHA256(asString(userName));
+
+export const encryptPasswordLikeLegacyApp = (password, userName) => {
+  const key = deriveAesKey(userName);
+  const encrypted = CryptoJS.AES.encrypt(asString(password), key, {
+    mode: CryptoJS.mode.ECB,
+    padding: CryptoJS.pad.Pkcs7,
+  });
+
+  return asString(encrypted.toString());
+};
+
 export const readLatestAppVersion = async () => {
   const payload = await getData(LATEST_VERSION_PATH);
 
@@ -92,6 +106,44 @@ export const readLatestAppVersion = async () => {
   );
 };
 
+export const validateAppVersion = async () => {
+  const payload = await getData(LATEST_VERSION_PATH);
+
+  if (payload === null || payload === undefined) {
+    return {
+      ok: false,
+      message: 'Version Expired',
+    };
+  }
+
+  let latestVersion = APP_VERSION;
+
+  if (typeof payload === 'string' || typeof payload === 'number') {
+    latestVersion = asString(payload) || APP_VERSION;
+  } else {
+    const data = asObject(payload) ?? {};
+    latestVersion =
+      asString(data.version) ||
+      asString(data.Version) ||
+      asString(data.appVersion) ||
+      asString(data.latestVersion) ||
+      asString(data.value) ||
+      APP_VERSION;
+  }
+
+  if (latestVersion.toLowerCase() !== APP_VERSION.toLowerCase()) {
+    return {
+      ok: false,
+      message: 'Version Expired',
+    };
+  }
+
+  return {
+    ok: true,
+    version: latestVersion,
+  };
+};
+
 export const readEmployeeGeneralDetails = async userId => {
   const payload = await getData(EMPLOYEE_GENERAL_DETAILS_PATH(userId));
   return normalizeEmployeeDetails(payload);
@@ -103,7 +155,8 @@ export const readAvailableDesignations = async () => {
       const downloadUrl = buildStorageDownloadUrl(AVAILABLE_DESIGNATIONS_PATH);
       const response = await fetch(downloadUrl);
       const payload = await response.json();
-      return extractDesignationIds(payload);
+      const designationIds = extractDesignationIds(payload);
+      return designationIds;
     })();
   }
 
@@ -129,7 +182,7 @@ export const resolveStoredPassword = details =>
       details?.encryptedPassword
   );
 
-export const matchesPassword = (storedPassword, enteredPassword) => {
+export const matchesPassword = (storedPassword, enteredPassword, userId) => {
   const stored = asString(storedPassword);
   const entered = asString(enteredPassword);
 
@@ -137,48 +190,73 @@ export const matchesPassword = (storedPassword, enteredPassword) => {
     return false;
   }
 
-  return stored === entered;
+  if (stored === entered) {
+    return true;
+  }
+
+  const encryptedEntered = encryptPasswordLikeLegacyApp(entered, userId);
+  return stored === encryptedEntered;
 };
 
 export const validateEmployeeLogin = async (userId, password) => {
-  const details = await readEmployeeGeneralDetails(userId);
+  const loginId = asString(userId);
+  const loginPassword = asString(password);
+
+  if (loginId.includes('.')) {
+    return {
+      ok: false,
+      message: 'Invalid user name or password',
+    };
+  }
+
+  const details = await readEmployeeGeneralDetails(loginId);
 
   if (!details) {
     return {
       ok: false,
-      message: 'Invalid user ID or password.',
+      message: 'Invalid user name or password',
     };
   }
 
-  if (resolveEmployeeStatus(details) !== '1') {
+  const employeeStatus = resolveEmployeeStatus(details);
+  const employeeDesignationId = resolveEmployeeDesignationId(details);
+  const storedPassword = resolveStoredPassword(details);
+
+  if (!employeeStatus || !employeeDesignationId || !storedPassword) {
     return {
       ok: false,
-      message: 'Your account is inactive. Please contact admin.',
+      message: 'You are not authorized to use',
     };
   }
 
-  if (!matchesPassword(resolveStoredPassword(details), password)) {
+  if (employeeStatus !== '1') {
     return {
       ok: false,
-      message: 'Invalid user ID or password.',
+      message: 'You are not authorized to use',
+    };
+  }
+
+  if (!matchesPassword(storedPassword, loginPassword, loginId)) {
+    return {
+      ok: false,
+      message: 'Invalid user or password',
     };
   }
 
   const allowedDesignations = await readAvailableDesignations();
-  const employeeDesignationId = resolveEmployeeDesignationId(details);
 
-  if (allowedDesignations.length > 0 && !allowedDesignations.includes(employeeDesignationId)) {
+  if (!allowedDesignations.includes(employeeDesignationId)) {
     return {
       ok: false,
-      message: 'You are not allowed for this app version.',
+      message: 'You are not authorized to use',
     };
   }
 
   return {
     ok: true,
     employee: details,
-    loginId: asString(userId),
-    loginType: employeeDesignationId,
+    loginId,
+    loginType: loginId,
     loggedInName: resolveEmployeeName(details),
     designationId: employeeDesignationId,
   };

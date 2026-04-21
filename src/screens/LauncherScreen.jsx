@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import appTheme from '../theme/appTheme';
+import {loadLoginSession} from '../services/sessionService';
 
 const LauncherScreen = ({ navigation }) => {
   const { width, height } = useWindowDimensions();
@@ -23,8 +24,20 @@ const LauncherScreen = ({ navigation }) => {
   const logoSize = Math.min(width * 0.38, 150);
 
   useEffect(() => {
-    const goToLogin = setTimeout(() => {
-      navigation.replace('Login');
+    let isActive = true;
+    const goToNextScreen = setTimeout(async () => {
+      let session = null;
+      try {
+        session = await loadLoginSession();
+      } catch {
+        session = null;
+      }
+
+      if (!isActive) {
+        return;
+      }
+
+      navigation.replace(session ? 'Dashboard' : 'Login');
     }, 2000);
 
     Animated.parallel([
@@ -85,7 +98,8 @@ const LauncherScreen = ({ navigation }) => {
     ]).start();
 
     return () => {
-      clearTimeout(goToLogin);
+      isActive = false;
+      clearTimeout(goToNextScreen);
       pulse.stopAnimation();
       drift1.stopAnimation();
       drift2.stopAnimation();

@@ -48,6 +48,37 @@ const toastStyles = {
   },
 };
 
+const alertStyles = {
+  info: {
+    icon: 'information-outline',
+    accentColor: appTheme.colors.brand.primaryDark,
+    iconBg: 'rgba(18, 59, 74, 0.12)',
+    buttonColor: appTheme.colors.brand.primaryDark,
+    buttonTextColor: '#FFFFFF',
+  },
+  warning: {
+    icon: 'alert-outline',
+    accentColor: appTheme.colors.status.warning,
+    iconBg: 'rgba(199, 125, 0, 0.12)',
+    buttonColor: appTheme.colors.brand.primaryDark,
+    buttonTextColor: '#FFFFFF',
+  },
+  error: {
+    icon: 'close-circle-outline',
+    accentColor: appTheme.colors.status.danger,
+    iconBg: 'rgba(180, 35, 24, 0.12)',
+    buttonColor: appTheme.colors.status.danger,
+    buttonTextColor: '#FFFFFF',
+  },
+  success: {
+    icon: 'check-circle-outline',
+    accentColor: appTheme.colors.status.success,
+    iconBg: 'rgba(22, 122, 69, 0.12)',
+    buttonColor: appTheme.colors.status.success,
+    buttonTextColor: '#FFFFFF',
+  },
+};
+
 export const AppFeedbackProvider = ({children}) => {
   const [alertState, setAlertState] = useState(null);
   const [toastState, setToastState] = useState(null);
@@ -62,6 +93,8 @@ export const AppFeedbackProvider = ({children}) => {
           title: configOrTitle,
           message: maybeMessage ?? '',
           buttons: maybeButtons ?? [{text: 'OK'}],
+          variant: 'info',
+          dismissible: true,
         });
         return;
       }
@@ -71,6 +104,8 @@ export const AppFeedbackProvider = ({children}) => {
         title: config.title ?? 'Notice',
         message: config.message ?? '',
         buttons: config.buttons?.length ? config.buttons : [{text: 'OK'}],
+        variant: config.variant ?? 'info',
+        dismissible: config.dismissible ?? true,
       });
     };
   }, []);
@@ -97,18 +132,27 @@ export const AppFeedbackProvider = ({children}) => {
 
   const contextValue = useMemo(() => ({showAlert, showToast, dismissAlert}), [showAlert, showToast]);
   const alertButtons = alertState?.buttons ?? [];
+  const alertTheme = alertStyles[alertState?.variant] ?? alertStyles.info;
   const toastTheme = toastState ? toastStyles[toastState.variant] ?? toastStyles.info : toastStyles.info;
 
   return (
     <FeedbackContext.Provider value={contextValue}>
       {children}
 
-      <Modal transparent visible={!!alertState} animationType="fade" onRequestClose={dismissAlert}>
-        <Pressable style={styles.overlay} onPress={dismissAlert}>
+      <Modal
+        transparent
+        visible={!!alertState}
+        animationType="fade"
+        onRequestClose={alertState?.dismissible === false ? () => {} : dismissAlert}
+      >
+        <Pressable
+          style={styles.overlay}
+          onPress={alertState?.dismissible === false ? undefined : dismissAlert}
+        >
           <Pressable style={styles.alertCard} onPress={() => {}}>
             <View style={styles.alertHeader}>
-              <View style={styles.alertIconWrap}>
-                <MaterialCommunityIcons name="alert-circle-outline" size={22} color={appTheme.colors.brand.accent} />
+              <View style={[styles.alertIconWrap, {backgroundColor: alertTheme.iconBg}]}>
+                <MaterialCommunityIcons name={alertTheme.icon} size={22} color={alertTheme.accentColor} />
               </View>
               <View style={styles.alertTextWrap}>
                 <Text style={styles.alertTitle}>{alertState?.title}</Text>
@@ -123,6 +167,7 @@ export const AppFeedbackProvider = ({children}) => {
                   style={({pressed}) => [
                     styles.alertButton,
                     button.style === 'cancel' && styles.alertButtonSecondary,
+                    button.style !== 'cancel' && {backgroundColor: alertTheme.buttonColor},
                     pressed && styles.pressed,
                   ]}
                   onPress={() => {
@@ -130,7 +175,13 @@ export const AppFeedbackProvider = ({children}) => {
                     button.onPress?.();
                   }}
                 >
-                  <Text style={[styles.alertButtonText, button.style === 'cancel' && styles.alertButtonTextSecondary]}>
+                  <Text
+                    style={[
+                      styles.alertButtonText,
+                      button.style === 'cancel' && styles.alertButtonTextSecondary,
+                      button.style !== 'cancel' && {color: alertTheme.buttonTextColor},
+                    ]}
+                  >
                     {button.text}
                   </Text>
                 </Pressable>

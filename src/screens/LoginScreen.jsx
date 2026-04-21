@@ -14,6 +14,8 @@ import {
 import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
+import {validateEmployeeLogin} from '../services/loginService';
+import {saveLoginSession} from '../services/sessionService';
 
 const LoginScreen = ({navigation}) => {
   const {width, height} = useWindowDimensions();
@@ -22,6 +24,8 @@ const LoginScreen = ({navigation}) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState({});
+  const [loginMessage, setLoginMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const cardWidth = useMemo(() => {
     const maxWidth = 460;
@@ -53,10 +57,11 @@ const LoginScreen = ({navigation}) => {
   );
   const fieldHeight = width < 360 ? 50 : 54;
 
-  const canSubmit = username.trim().length > 0 && password.trim().length > 0;
+  const canSubmit = !isSubmitting && username.trim().length > 0 && password.trim().length > 0;
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     const nextErrors = {};
+    setLoginMessage('');
 
     if (!username.trim()) {
       nextErrors.username = 'Username is required.';
@@ -72,7 +77,21 @@ const LoginScreen = ({navigation}) => {
       return;
     }
 
-    navigation.replace('Dashboard');
+    try {
+      setIsSubmitting(true);
+      const result = await validateEmployeeLogin(username.trim(), password.trim());
+      if (!result.ok) {
+        setLoginMessage(result.message);
+        return;
+      }
+
+      await saveLoginSession(result);
+      navigation.replace('Dashboard', result);
+    } catch (error) {
+      setLoginMessage(error?.message || 'Unable to save session. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -108,6 +127,9 @@ const LoginScreen = ({navigation}) => {
             <Text style={subtitleStyle}>
               Use your username and password to access the app.
             </Text>
+            {!!loginMessage && (
+              <Text style={styles.formMessage}>{loginMessage}</Text>
+            )}
           </View>
 
           <View style={[styles.panel, {width: cardWidth}]}>
@@ -128,6 +150,9 @@ const LoginScreen = ({navigation}) => {
                     setUsername(text);
                     if (errors.username) {
                       setErrors(prev => ({...prev, username: ''}));
+                    }
+                    if (loginMessage) {
+                      setLoginMessage('');
                     }
                   }}
                   placeholder="Enter username"
@@ -156,6 +181,9 @@ const LoginScreen = ({navigation}) => {
                     setPassword(text);
                     if (errors.password) {
                       setErrors(prev => ({...prev, password: ''}));
+                    }
+                    if (loginMessage) {
+                      setLoginMessage('');
                     }
                   }}
                   placeholder="Enter password"
@@ -199,7 +227,7 @@ const LoginScreen = ({navigation}) => {
                 color={canSubmit ? appTheme.colors.brand.accent : 'rgba(255,255,255,0.65)'}
               />
               <Text style={[styles.loginBtnText, !canSubmit && styles.loginBtnTextDisabled]}>
-                Login
+                {isSubmitting ? 'Signing in...' : 'Login'}
               </Text>
             </Pressable>
           </View>
@@ -278,6 +306,14 @@ const styles = StyleSheet.create({
     maxWidth: 320,
     color: appTheme.colors.neutral.textMuted,
     textAlign: 'center',
+  },
+  formMessage: {
+    marginTop: 12,
+    maxWidth: 320,
+    color: '#C24A4A',
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '600',
   },
   panel: {
     backgroundColor: 'rgba(255,255,255,0.84)',
