@@ -153,11 +153,6 @@ export const enqueuePendingMediaUpload = async item => {
 
     queue.push(nextItem);
     await writeQueue(queue);
-    console.log('[PendingUploads] enqueued:', {
-      id: nextItem.id,
-      storagePath: asString(nextItem.storagePath),
-      localPath: asString(nextItem.localPath),
-    });
     return nextItem;
   });
 };
@@ -176,11 +171,9 @@ export const flushPendingMediaUploads = async () => {
   return withQueueLock(async () => {
     const queue = await readQueue();
     if (!queue.length) {
-      console.log('[PendingUploads] flush skipped: queue empty');
       return {processed: 0, succeeded: 0, failed: 0, remaining: 0};
     }
 
-    console.log('[PendingUploads] flush start:', {count: queue.length});
     const nextQueue = [];
     let processed = 0;
     let succeeded = 0;
@@ -196,20 +189,10 @@ export const flushPendingMediaUploads = async () => {
       if (!localPath || !storagePath) {
         failed += 1;
         nextQueue.push(item);
-        console.log('[PendingUploads] invalid item, kept in queue:', {
-          id: item?.id,
-          localPath,
-          storagePath,
-        });
         continue;
       }
 
       try {
-        console.log('[PendingUploads] upload attempt:', {
-          id: item?.id,
-          storagePath,
-          localPath,
-        });
         let uploadPath = localPath;
         let cleanupPath = null;
 
@@ -217,13 +200,6 @@ export const flushPendingMediaUploads = async () => {
           const prepared = await prepareImageForUpload(localPath);
           uploadPath = prepared.path;
           cleanupPath = prepared.cleanupPath;
-          console.log('[PendingUploads] image prepared:', {
-            id: item?.id,
-            storagePath,
-            originalPath: localPath,
-            uploadPath,
-            sizeBytes: prepared.size,
-          });
         }
 
         await uploadFileToStorage(storagePath, uploadPath, contentType);
@@ -231,32 +207,16 @@ export const flushPendingMediaUploads = async () => {
           await removeQueueItemFile(cleanupPath);
         }
         succeeded += 1;
-        console.log('[PendingUploads] upload success:', {
-          id: item?.id,
-          storagePath,
-        });
       } catch {
         failed += 1;
         nextQueue.push({
           ...item,
           retries: Number(item?.retries || 0) + 1,
         });
-        console.log('[PendingUploads] upload failed, will retry later:', {
-          id: item?.id,
-          storagePath,
-          retries: Number(item?.retries || 0) + 1,
-        });
       }
     }
 
     await writeQueue(nextQueue);
-    console.log('[PendingUploads] flush complete:', {
-      processed,
-      succeeded,
-      failed,
-      remaining: nextQueue.length,
-    });
-
     return {
       processed,
       succeeded,

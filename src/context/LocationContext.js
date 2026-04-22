@@ -1,0 +1,130 @@
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+} from 'react';
+import usePermissions from '../hooks/usePermissions';
+import {
+  startLocationTracking,
+  stopLocationTracking,
+  setTrackingConfig,
+  requestIgnoreBatteryOptimizations,
+  subscribeToUserLocation,
+  subscribeToTravelSnapshots,
+  flushPendingLocationSnapshots,
+  saveLocationSnapshot,
+  getSessionEmpId,
+} from '../services/locationTrackingService';
+import { loadLoginSession } from '../services/sessionService';
+
+const LocationContext = createContext(null);
+
+export const useLocation = () => {
+  const ctx = useContext(LocationContext);
+  if (!ctx) throw new Error('useLocation must be used within LocationProvider');
+  return ctx;
+};
+
+export const LocationProvider = ({ children }) => {
+  usePermissions(); // Requests on mount
+  const [isTracking, setIsTracking] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState(null); // { latitude, longitude, accuracy, speed }
+  const [error, setError] = useState(null);
+  const isStartingRef = useRef(false);
+  const stopTrackingRef = useRef(null);
+
+  // Start tracking (call after login)
+  const startTracking = useCallback(async () => {
+    if (isTracking) return;
+    setIsTracking(true);
+    try {
+      const session = await loadLoginSession();
+      const empId = getSessionEmpId(session);
+
+      if (!empId) {
+        throw new Error('User not logged in');
+      }
+
+      // Set up listeners FIRST before starting native tracking
+      const unsubLocation = subscribeToUserLocation(loc => {
+        setCurrentLocation(loc);
+      });
+
+      const unsubSnapshots = subscribeToTravelSnapshots(async snapshot => {
+        await saveLocationSnapshot({
+          pathString: snapshot.path,
+          distanceInMeters: snapshot.distanceInMeters,
+          timestamp: snapshot.timestamp,
+          date: snapshot.date,
+          time: snapshot.time,
+        });
+      });
+
+      // Flush any old pending snapshots from previous sessions
+      await flushPendingLocationSnapshots();
+
+      // Configure tracking parameters
+      setTrackingConfig({
+        gpsIntervalMs: 3000,
+        accuracyThresholdM: 50,
+        minDistanceM: 10,
+        snapshotIntervalMs: 60000,
+      });
+
+      // Request battery optimization exemption (non-blocking)
+      requestIgnoreBatteryOptimizations().catch(() => {});
+
+      // NOW start native tracking - listeners are already listening
+      startLocationTracking();
+      console.log('[LocationService] Tracking started for employee:', empId);
+
+      stopTrackingRef.current = () => {
+        unsubLocation();
+        unsubSnapshots();
+        stopLocationTracking();
+      };
+
+      return true;
+    } catch (error) {
+      setIsTracking(false);
+      setError(error?.message || error);
+      return false;
+    }
+  }, [isTracking]);
+
+  // Stop tracking (call on logout)
+  const stopTracking = useCallback(() => {
+    if (stopTrackingRef.current) {
+      stopTrackingRef.current();
+      stopTrackingRef.current = null;
+    } else {
+      stopLocationTracking();
+    }
+    setIsTracking(false);
+    setCurrentLocation(null);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopLocationTracking();
+    };
+  }, []);
+
+  return (
+    <LocationContext.Provider
+      value={{
+        isTracking,
+        currentLocation,
+        error,
+        startTracking,
+        stopTracking,
+      }}
+    >
+      {children}
+    </LocationContext.Provider>
+  );
+};

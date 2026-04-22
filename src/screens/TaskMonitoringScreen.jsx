@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   FlatList,
   Modal,
@@ -9,409 +9,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
-import {getData} from '../firebase/firebaseService';
-import {loadLoginSession} from '../services/sessionService';
-
-const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-
-const hasTaskData = value => {
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-
-  if (!isPlainObject(value)) {
-    return false;
-  }
-
-  return Object.keys(value).length > 0;
-};
-
-const getFirstText = (...values) => {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-
-    if (typeof value === 'number' || typeof value === 'boolean') {
-      return String(value);
-    }
-  }
-
-  return '';
-};
-
-const resolveTaskStatus = task => {
-  const approvedRaw = getFirstText(
-    task?.approvedStatus,
-    task?.ApprovedStatus,
-    task?.approvalStatus,
-    task?.ApprovalStatus,
-  ).toLowerCase();
-
-  if (approvedRaw) {
-    return approvedRaw === '0' || approvedRaw === 'false' ? 'Not Approved' : 'Approved';
-  }
-
-  const rawStatus = getFirstText(task?.status, task?.Status, task?.taskStatus, task?.TaskStatus).toLowerCase();
-  if (!rawStatus) {
-    return 'Pending';
-  }
-
-  if (rawStatus.includes('approve')) {
-    return 'Approved';
-  }
-
-  if (rawStatus.includes('reject') || rawStatus.includes('not approved')) {
-    return 'Not Approved';
-  }
-
-  return 'Pending';
-};
-
-const resolveTaskPriority = task => {
-  const rawPriority = getFirstText(
-    task?.priority,
-    task?.Priority,
-    task?.taskPriority,
-    task?.TaskPriority,
-    task?.importance,
-    task?.Importance,
-  ).toLowerCase();
-
-  if (!rawPriority) {
-    return 'Medium';
-  }
-
-  if (rawPriority.includes('high')) {
-    return 'High';
-  }
-
-  if (rawPriority.includes('low')) {
-    return 'Low';
-  }
-
-  if (rawPriority.includes('medium')) {
-    return 'Medium';
-  }
-
-  return rawPriority.charAt(0).toUpperCase() + rawPriority.slice(1);
-};
-
-const buildTaskTitle = task => {
-  return (
-    getFirstText(
-      task?.title,
-      task?.Title,
-      task?.taskTitle,
-      task?.TaskTitle,
-      task?.name,
-      task?.Name,
-      task?.subject,
-      task?.Subject,
-      task?.description,
-      task?.Description,
-      task?.remarks,
-      task?.Remarks,
-    ) || 'Untitled Task'
-  );
-};
-
-const buildTaskType = (task, fallbackType) => {
-  return (
-    getFirstText(
-      task?.type,
-      task?.Type,
-      task?.taskType,
-      task?.TaskType,
-      task?.category,
-      task?.Category,
-    ) || fallbackType
-  );
-};
-
-const resolveCatalogTaskTitle = (catalog, taskKey) => {
-  if (!taskKey || !catalog || typeof catalog !== 'object') {
-    return '';
-  }
-
-  const entry = catalog[taskKey];
-  if (!entry) {
-    return '';
-  }
-
-  if (typeof entry === 'string') {
-    return entry.trim();
-  }
-
-  return getFirstText(entry?.name, entry?.title, entry?.taskName, entry?.TaskName, entry?.label);
-};
-
-const compactArrayForLog = value => {
-  if (!Array.isArray(value)) {
-    return value;
-  }
-
-  return value.filter(item => item !== null && item !== undefined);
-};
-
-const getTaskStatusRank = status => {
-  const normalized = getFirstText(status).toLowerCase();
-  if (normalized.includes('completed')) return 3;
-  if (normalized.includes('approved')) return 2;
-  if (normalized.includes('not approved') || normalized.includes('rejected')) return 1;
-  if (normalized.includes('pending')) return 0;
-  return 0;
-};
-
-const TASK_FIELD_KEYS = new Set([
-  '_at',
-  'address',
-  'approvedAt',
-  'approvedBy',
-  'approvedStatus',
-  'ApprovedStatus',
-  'approvalStatus',
-  'ApprovalStatus',
-  'completionStatus',
-  'CompletionStatus',
-  'date',
-  'Date',
-  'image1',
-  'image2',
-  'image3',
-  'image4',
-  'image5',
-  'latLng',
-  'noOfParticipants',
-  'remark',
-  'status',
-  'Status',
-  'taskCategory',
-  'taskStatus',
-  'TaskStatus',
-  'taskType',
-  'TaskType',
-  'title',
-  'Title',
-  'type',
-  'Type',
-  'wardNo',
-  'video1',
-  'video2',
-]);
-
-const isTaskLeafNode = item => {
-  if (!isPlainObject(item)) {
-    return false;
-  }
-
-  return Object.keys(item).some(key => TASK_FIELD_KEYS.has(key));
-};
-
-const isTraversableNode = value => Array.isArray(value) || isPlainObject(value);
-
-const getCurrentDateParts = date => {
-  const year = String(date.getFullYear());
-  const month = date.toLocaleString('en-US', {month: 'long'});
-  const monthPadded = String(date.getMonth() + 1).padStart(2, '0');
-  const dayPadded = String(date.getDate()).padStart(2, '0');
-
-  return {
-    year,
-    month,
-    isoDate: `${year}-${monthPadded}-${dayPadded}`,
-  };
-};
-
-const readFirstExistingPath = async paths => {
-  for (const path of paths) {
-    console.log('[TaskMonitoring] checking path:', path);
-    const value = await getData(path);
-    if (hasTaskData(value)) {
-      console.log('[TaskMonitoring] path hit:', {
-        path,
-        keys: Array.isArray(value)
-          ? value
-              .map((item, index) => (item === null || item === undefined ? null : String(index)))
-              .filter(Boolean)
-          : Object.keys(value),
-        value: compactArrayForLog(value),
-      });
-      return {path, value};
-    }
-
-    console.log('[TaskMonitoring] path empty:', path);
-  }
-
-  console.log('[TaskMonitoring] no matching path found:', paths);
-  return {path: null, value: null};
-};
-
-const flattenTaskNode = (value, fallbackType, sourceLabel, taskCatalog = null) => {
-  const seen = new Set();
-  const walk = (node, trail = []) => {
-    if (node === null || node === undefined) {
-      return [];
-    }
-
-    const entries = Array.isArray(node)
-      ? node
-          .map((item, index) => [String(index), item])
-          .filter(([, item]) => item !== null && item !== undefined)
-      : isPlainObject(node)
-        ? Object.entries(node)
-        : [];
-
-    return entries.flatMap(([key, item], index) => {
-      const nextTrail = [...trail, key];
-
-      if (isTraversableNode(item)) {
-        if (isTaskLeafNode(item)) {
-          const taskKey = getFirstText(nextTrail.length >= 2 ? nextTrail[nextTrail.length - 2] : '', key);
-          const id = getFirstText(item?.id, item?.Id, item?.taskId, item?.TaskId, key, `${sourceLabel}-${index}`);
-          const title =
-            buildTaskTitle(item) ||
-            resolveCatalogTaskTitle(taskCatalog, taskKey) ||
-            resolveCatalogTaskTitle(taskCatalog, id) ||
-            taskKey ||
-            id;
-          const status = resolveTaskStatus(item);
-          const type = buildTaskType(item, fallbackType);
-          const priority = resolveTaskPriority(item);
-          const date = getFirstText(item?.date, item?.Date, item?.taskDate, item?.TaskDate, item?.createdOn, item?.CreatedOn);
-
-          console.log('[TaskMonitoring] status resolve:', {
-            sourceLabel,
-            path: nextTrail.join('/'),
-            id,
-            taskKey,
-            rawFields: {
-              _at: item?._at,
-              address: item?.address,
-              approvedAt: item?.approvedAt,
-              approvedBy: item?.approvedBy,
-              approvedStatus: item?.approvedStatus,
-              approvalStatus: item?.approvalStatus,
-              completionStatus: item?.completionStatus,
-              latLng: item?.latLng,
-              noOfParticipants: item?.noOfParticipants,
-              remark: item?.remark,
-              status: item?.status,
-              taskCategory: item?.taskCategory,
-              type: item?.type,
-              wardNo: item?.wardNo,
-              video1: item?.video1,
-              video2: item?.video2,
-            },
-            resolvedStatus: status,
-          });
-
-          const signature = `${sourceLabel}:${nextTrail.join('/')}:${id}:${title}:${status}:${type}`;
-          if (seen.has(signature)) {
-            console.log('[TaskMonitoring] duplicate leaf skipped:', signature);
-            return [];
-          }
-          seen.add(signature);
-
-          return [
-            {
-              id,
-              taskKey,
-              listKey: `${sourceLabel}:${nextTrail.join('/')}:${id}`,
-              title,
-              status,
-            type,
-              priority,
-              date,
-              address: getFirstText(item?.address, item?.Address, item?.location, item?.Location),
-              remark: getFirstText(item?.remark, item?.Remark, item?.remarks, item?.Remarks),
-              images: Object.keys(item).filter(name => /^image\d+$/i.test(name)).length,
-              videos: Object.keys(item).filter(name => /^video\d+$/i.test(name)).length,
-            },
-          ];
-        }
-
-        return walk(item, nextTrail);
-      }
-
-      const taskKey = getFirstText(nextTrail.length >= 2 ? nextTrail[nextTrail.length - 2] : '', key);
-      const title = getFirstText(item) || resolveCatalogTaskTitle(taskCatalog, taskKey) || taskKey;
-      if (!title) {
-        return [];
-      }
-
-      const id = getFirstText(key, `${sourceLabel}-${index}`);
-      const signature = `${sourceLabel}:${nextTrail.join('/')}:${id}:${title}:Pending:${fallbackType}`;
-      if (seen.has(signature)) {
-        console.log('[TaskMonitoring] duplicate leaf skipped:', signature);
-        return [];
-      }
-      seen.add(signature);
-
-      console.log('[TaskMonitoring] status resolve:', {
-        sourceLabel,
-        path: nextTrail.join('/'),
-        id,
-        taskKey,
-        rawFields: {primitiveValue: item},
-        resolvedStatus: 'Pending',
-      });
-
-      return [
-        {
-          id: getFirstText(key, `${sourceLabel}-${index}`),
-          listKey: `${sourceLabel}:${nextTrail.join('/')}:${getFirstText(key, `${sourceLabel}-${index}`)}`,
-          title,
-          status: 'Pending',
-          type: fallbackType,
-          priority: 'Medium',
-          date: '',
-          address: '',
-          remark: '',
-          images: 0,
-          videos: 0,
-        },
-      ];
-    });
-  };
-
-  return walk(value);
-};
-
-const mergeAssignedTasks = (...taskGroups) => {
-  const merged = new Map();
-
-  taskGroups.flat().forEach(task => {
-    if (!task) {
-      return;
-    }
-
-    const identity = getFirstText(task?.taskKey, task?.id, task?.title).toLowerCase();
-    if (!identity) {
-      return;
-    }
-
-    const existing = merged.get(identity);
-    if (!existing) {
-      merged.set(identity, task);
-      return;
-    }
-
-    const currentRank = getTaskStatusRank(task.status);
-    const existingRank = getTaskStatusRank(existing.status);
-    if (currentRank > existingRank) {
-      merged.set(identity, {...existing, ...task, title: task.title || existing.title});
-      return;
-    }
-
-    merged.set(identity, {...task, ...existing, title: existing.title || task.title});
-  });
-
-  return Array.from(merged.values());
-};
+import { useTaskMonitoring } from '../actions/taskMonitoringActions';
 
 const STATUS_META = {
   Pending: {
@@ -453,12 +57,10 @@ const formatDisplayDate = value => {
   if (!value) {
     return '-';
   }
-
   const date = typeof value === 'string' ? parseDate(value) : value;
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return '-';
   }
-
   return date.toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'short',
@@ -472,7 +74,7 @@ const parseDate = value => {
 };
 
 const getMonthLabel = date => {
-  return date.toLocaleDateString('en-US', {month: 'long', year: 'numeric'});
+  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 };
 
 const getDaysInMonth = date => {
@@ -482,222 +84,104 @@ const getDaysInMonth = date => {
   const lastDay = new Date(year, month + 1, 0);
   const startPadding = firstDay.getDay();
   const days = [];
-
   for (let i = 0; i < startPadding; i += 1) {
     days.push(null);
   }
-
   for (let day = 1; day <= lastDay.getDate(); day += 1) {
     days.push(new Date(year, month, day));
   }
-
   return days;
+};
+
+const formatApprovedAt = timestamp => {
+  if (!timestamp) return '-';
+  const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return '-';
+  }
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = date.toLocaleDateString('en-US', { month: 'short' });
+  const year = date.getFullYear();
+  let hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${day} ${month} ${year} ${hours}:${minutes} ${ampm}`;
 };
 
 const ListSeparator = () => <View style={styles.listSeparator} />;
 
-const TaskMonitoringScreen = ({navigation}) => {
+const TaskMonitoringScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const [selectedFilter, setSelectedFilter] = useState('All');
-  const [selectedDate, setSelectedDate] = useState(() => formatDate(new Date()));
-  const [calendarMonth, setCalendarMonth] = useState(() => parseDate(formatDate(new Date())));
+  const {
+    selectedFilter,
+    setSelectedFilter,
+    selectedDate,
+    setSelectedDate,
+    calendarMonth,
+    setCalendarMonth,
+    tasks,
+    filteredTasks,
+    stats,
+    moveCalendarMonth,
+    moveCalendarYear,
+    loadTasks,
+  } = useTaskMonitoring();
+
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
-  const [tasks, setTasks] = useState([]);
 
-  const filteredTasks = useMemo(() => {
-    return tasks.filter(task => {
-      const matchesStatus = selectedFilter === 'All' ? true : task.status === selectedFilter;
-      const matchesDate = selectedDate ? task.date === selectedDate : true;
-      return matchesStatus && matchesDate;
-    });
-  }, [selectedFilter, selectedDate, tasks]);
-
-  const stats = useMemo(() => {
-    return {
-      total: tasks.length,
-      pending: tasks.filter(task => task.status === 'Pending').length,
-      approved: tasks.filter(task => task.status === 'Approved').length,
-      notApproved: tasks.filter(task => task.status === 'Not Approved').length,
-      completed: tasks.filter(task => task.status === 'Completed').length,
-    };
-  }, [tasks]);
-
-  useEffect(() => {
-    console.log(
-      '[TaskMonitoring] tasks state updated:',
-      tasks.map(task => ({
-        id: task.id,
-        title: task.title,
-        status: task.status,
-        type: task.type,
-        priority: task.priority,
-        date: task.date,
-      })),
-    );
-    console.log('[TaskMonitoring] tasks summary:', {
-      total: tasks.length,
-      pending: tasks.filter(task => task.status === 'Pending').length,
-      approved: tasks.filter(task => task.status === 'Approved').length,
-      completed: tasks.filter(task => task.status === 'Completed').length,
-      notApproved: tasks.filter(task => task.status === 'Not Approved').length,
-    });
-  }, [tasks]);
-
-  useEffect(() => {
-    console.log(
-      '[TaskMonitoring] filtered list updated:',
-      filteredTasks.map(task => ({
-        id: task.id,
-        title: task.title,
-        status: task.status,
-        type: task.type,
-        priority: task.priority,
-        date: task.date,
-      })),
-    );
-    console.log('[TaskMonitoring] filtered summary:', {
-      total: filteredTasks.length,
-      pending: filteredTasks.filter(task => task.status === 'Pending').length,
-      approved: filteredTasks.filter(task => task.status === 'Approved').length,
-      completed: filteredTasks.filter(task => task.status === 'Completed').length,
-      notApproved: filteredTasks.filter(task => task.status === 'Not Approved').length,
-      selectedFilter,
-      selectedDate,
-    });
-  }, [filteredTasks, selectedFilter, selectedDate]);
-
-  useEffect(() => {
-    let isActive = true;
-
-    const loadTasks = async () => {
-      try {
-        const session = await loadLoginSession();
-        const loginId = getFirstText(session?.loginId, session?.employee?.userId, session?.employee?.id, session?.employee?.loginId);
-        console.log('[TaskMonitoring] load start:', {
-          loginId,
-          selectedDate,
-        });
-
-        if (!loginId) {
-          if (isActive) {
-            setTasks([]);
-          }
-          return;
-        }
-
-        const date = parseDate(selectedDate);
-        const dateParts = getCurrentDateParts(date);
-        const kpiPaths = [`IECData/IECKPITasks/${loginId}`];
-        const priorityPaths = [`IECData/IECPriorityTasks/${loginId}/${dateParts.isoDate}`];
-        const currentTaskPaths = [`IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.month}/${dateParts.isoDate}`];
-
-        console.log('[TaskMonitoring] source paths:', {
-          kpiPaths,
-          priorityPaths,
-          currentTaskPaths,
-        });
-
-        const [taskCatalog, kpiResult, priorityResult, currentResult] = await Promise.all([
-          getData('IECData/Tasks'),
-          readFirstExistingPath(kpiPaths),
-          readFirstExistingPath(priorityPaths),
-          readFirstExistingPath(currentTaskPaths),
-        ]);
-
-        console.log('[TaskMonitoring] raw source values:', {
-          taskCatalog,
-          kpiResult,
-          priorityResult,
-          currentResult: {
-            ...currentResult,
-            value: compactArrayForLog(currentResult.value),
-          },
-        });
-
-        const kpiTasks = flattenTaskNode(kpiResult.value, 'KPI Task', 'KPI', kpiResult.path, taskCatalog).map(task => ({
-          ...task,
-          date: task.date || dateParts.isoDate,
-        }));
-        const priorityTasks = flattenTaskNode(priorityResult.value, 'Priority Task', 'Priority', priorityResult.path, taskCatalog).map(task => ({
-          ...task,
-          date: task.date || dateParts.isoDate,
-        }));
-        const statusTasks = flattenTaskNode(currentResult.value, 'Current Task', 'Current', currentResult.path, taskCatalog).map(task => ({
-          ...task,
-          date: task.date || dateParts.isoDate,
-        }));
-        const dedupedTasks = mergeAssignedTasks(kpiTasks, priorityTasks, statusTasks).map(task => ({
-          ...task,
-          date: task.date || dateParts.isoDate,
-        }));
-
-        console.log(
-          '[TaskMonitoring] normalized task list:',
-          dedupedTasks.map(task => ({
-            id: task.id,
-            title: task.title,
-            status: task.status,
-            type: task.type,
-            priority: task.priority,
-            date: task.date,
-          })),
-        );
-
-        if (isActive) {
-          setTasks(dedupedTasks);
-          console.log('[TaskMonitoring] setTasks applied:', dedupedTasks.length);
-        }
-      } catch (error) {
-        if (isActive) {
-          setTasks([]);
-          console.log('[TaskMonitoring] load error:', error?.message || error);
-        }
-      }
-    };
-
-    loadTasks();
-
-    return () => {
-      isActive = false;
-    };
-  }, [selectedDate]);
-
-  const calendarDays = useMemo(() => getDaysInMonth(calendarMonth), [calendarMonth]);
+  const calendarDays = useMemo(
+    () => getDaysInMonth(calendarMonth),
+    [calendarMonth],
+  );
 
   const priorityColor = priority => {
-    if (priority === 'High') return appTheme.colors.status.danger;
-    if (priority === 'Medium') return appTheme.colors.status.warning;
+    const p = String(priority).toLowerCase();
+    if (p.includes('high')) return appTheme.colors.status.danger;
+    if (p.includes('medium')) return appTheme.colors.status.warning;
     return appTheme.colors.status.success;
   };
 
-  const moveCalendarMonth = offset => {
-    setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
-  };
-
-  const moveCalendarYear = offset => {
-    setCalendarMonth(prev => new Date(prev.getFullYear() + offset, prev.getMonth(), 1));
-  };
-
-  const openDatePicker = () => {
+  const handleOpenDatePicker = useCallback(() => {
     setCalendarMonth(parseDate(selectedDate));
     setDatePickerOpen(true);
-  };
+  }, [selectedDate]);
 
-  const renderTask = ({item}) => {
+  const renderTask = ({ item }) => {
     const status = STATUS_META[item.status] ?? STATUS_META.Pending;
-    const isActionable = item.status === 'Pending' || item.status === 'Not Approved';
+    const isActionable =
+      item.status === 'Pending' || item.status === 'Not Approved';
+    const priorityText = item.type
+      ? String(item.type).charAt(0).toUpperCase() +
+        String(item.type).slice(1).toLowerCase()
+      : 'Medium';
+    const categoryText = item.taskCategory || 'Other';
 
     return (
-      <Pressable style={({pressed}) => [styles.card, pressed && styles.cardPressed]} onPress={() => setSelectedTask(item)}>
+      <Pressable
+        style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+        onPress={() => setSelectedTask(item)}
+      >
         <View style={styles.cardTopRow}>
           <View style={styles.typeChip}>
-            <Text style={styles.typeChipText}>{item.type}</Text>
+            <Text style={styles.typeChipText}>{categoryText}</Text>
           </View>
           <View style={styles.priorityChip}>
-            <MaterialCommunityIcons name="flag-variant-outline" size={12} color={priorityColor(item.priority)} />
-            <Text style={[styles.priorityText, {color: priorityColor(item.priority)}]}>{item.priority}</Text>
+            <MaterialCommunityIcons
+              name="flag-variant-outline"
+              size={12}
+              color={priorityColor(priorityText)}
+            />
+            <Text
+              style={[
+                styles.priorityText,
+                { color: priorityColor(priorityText) },
+              ]}
+            >
+              {priorityText}
+            </Text>
           </View>
         </View>
 
@@ -705,18 +189,31 @@ const TaskMonitoringScreen = ({navigation}) => {
           {item.title}
         </Text>
 
-        <Text style={styles.cardMeta} numberOfLines={1}>
-          <MaterialCommunityIcons name="map-marker-outline" size={14} color={appTheme.colors.neutral.textMuted} /> {item.address}
-        </Text>
+       
 
         <View style={styles.cardFooter}>
-          <View style={[styles.statusChip, {backgroundColor: status.backgroundColor}]}>
-            <MaterialCommunityIcons name={status.icon} size={14} color={status.color} />
-            <Text style={[styles.statusText, {color: status.color}]}>{status.label}</Text>
+          <View
+            style={[
+              styles.statusChip,
+              { backgroundColor: status.backgroundColor },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name={status.icon}
+              size={14}
+              color={status.color}
+            />
+            <Text style={[styles.statusText, { color: status.color }]}>
+              {status.label}
+            </Text>
           </View>
           {isActionable ? (
             <View style={styles.mediaChip}>
-              <MaterialCommunityIcons name="camera-burst" size={14} color={appTheme.colors.neutral.textMuted} />
+              <MaterialCommunityIcons
+                name="camera-burst"
+                size={14}
+                color={appTheme.colors.neutral.textMuted}
+              />
               <Text style={styles.mediaText}>
                 {item.images} photos, {item.videos} videos
               </Text>
@@ -729,24 +226,51 @@ const TaskMonitoringScreen = ({navigation}) => {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
-      <StatusBar barStyle="dark-content" backgroundColor={appTheme.colors.neutral.background} />
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor={appTheme.colors.neutral.background}
+      />
 
       <View style={styles.topBar}>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation?.goBack?.()} activeOpacity={0.75}>
-          <MaterialCommunityIcons name="arrow-left" size={22} color={appTheme.colors.brand.primaryDark} />
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => navigation?.goBack?.()}
+          activeOpacity={0.75}
+        >
+          <MaterialCommunityIcons
+            name="arrow-left"
+            size={22}
+            color={appTheme.colors.brand.primaryDark}
+          />
         </TouchableOpacity>
         <View style={styles.topBarTextWrap}>
           <Text style={styles.screenTitle}>Task Monitoring</Text>
-          <Text style={styles.screenSubtitle}>Monitor task progress and review submissions</Text>
+          <Text style={styles.screenSubtitle}>
+            Monitor task progress and review submissions
+          </Text>
         </View>
       </View>
 
-      <View style={[styles.screenBody, {paddingBottom: insets.bottom}]}>
+      <View style={[styles.screenBody, { paddingBottom: insets.bottom }]}>
         <View style={styles.compactPanel}>
-          <TouchableOpacity style={styles.dateChip} onPress={openDatePicker} activeOpacity={0.8}>
-            <MaterialCommunityIcons name="calendar-month-outline" size={16} color={appTheme.colors.brand.primaryDark} />
-            <Text style={styles.dateChipText}>{formatDisplayDate(selectedDate)}</Text>
-            <MaterialCommunityIcons name="chevron-down" size={18} color={appTheme.colors.neutral.textMuted} />
+          <TouchableOpacity
+            style={styles.dateChip}
+            onPress={handleOpenDatePicker}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="calendar-month-outline"
+              size={16}
+              color={appTheme.colors.brand.primaryDark}
+            />
+            <Text style={styles.dateChipText}>
+              {formatDisplayDate(selectedDate)}
+            </Text>
+            <MaterialCommunityIcons
+              name="chevron-down"
+              size={18}
+              color={appTheme.colors.neutral.textMuted}
+            />
           </TouchableOpacity>
 
           <View style={styles.statusRow}>
@@ -754,18 +278,32 @@ const TaskMonitoringScreen = ({navigation}) => {
               <Text style={styles.statusMiniText}>Pending {stats.pending}</Text>
             </View>
             <View style={styles.statusMiniChip}>
-              <Text style={styles.statusMiniText}>Approved {stats.approved}</Text>
+              <Text style={styles.statusMiniText}>
+                Approved {stats.approved}
+              </Text>
             </View>
             <View style={styles.statusMiniChip}>
-              <Text style={styles.statusMiniText}>Not Approved {stats.notApproved}</Text>
+              <Text style={styles.statusMiniText}>
+                Not Approved {stats.notApproved}
+              </Text>
             </View>
           </View>
         </View>
 
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Tasks ({filteredTasks.length})</Text>
-          <TouchableOpacity style={styles.filterButton} onPress={() => setFilterMenuOpen(true)} activeOpacity={0.8}>
-            <MaterialCommunityIcons name="filter-variant" size={20} color="#FFFFFF" />
+          <Text style={styles.sectionTitle}>
+            Tasks ({filteredTasks.length})
+          </Text>
+          <TouchableOpacity
+            style={styles.filterButton}
+            onPress={() => setFilterMenuOpen(true)}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="filter-variant"
+              size={20}
+              color="#FFFFFF"
+            />
           </TouchableOpacity>
         </View>
 
@@ -777,34 +315,62 @@ const TaskMonitoringScreen = ({navigation}) => {
               renderItem={renderTask}
               style={styles.taskList}
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={[styles.listContent, {paddingBottom: insets.bottom + 24}]}
+              contentContainerStyle={[
+                styles.listContent,
+                { paddingBottom: insets.bottom + 24 },
+              ]}
               ItemSeparatorComponent={ListSeparator}
             />
           ) : (
             <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="folder-search-outline" size={34} color={appTheme.colors.neutral.textMuted} />
+              <MaterialCommunityIcons
+                name="folder-search-outline"
+                size={34}
+                color={appTheme.colors.neutral.textMuted}
+              />
               <Text style={styles.emptyTitle}>No tasks found</Text>
-              <Text style={styles.emptyText}>Try a different date or filter.</Text>
+              <Text style={styles.emptyText}>
+                Try a different date or filter.
+              </Text>
             </View>
           )}
         </View>
       </View>
 
-      <Modal visible={filterMenuOpen} transparent animationType="fade" onRequestClose={() => setFilterMenuOpen(false)}>
-        <Pressable style={styles.menuOverlay} onPress={() => setFilterMenuOpen(false)}>
+      <Modal
+        visible={filterMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFilterMenuOpen(false)}
+      >
+        <Pressable
+          style={styles.menuOverlay}
+          onPress={() => setFilterMenuOpen(false)}
+        >
           <View style={styles.filterMenu}>
             {FILTERS.map(filter => {
               const active = selectedFilter === filter;
               return (
                 <TouchableOpacity
                   key={filter}
-                  style={[styles.filterMenuItem, active && styles.filterMenuItemActive]}
+                  style={[
+                    styles.filterMenuItem,
+                    active && styles.filterMenuItemActive,
+                  ]}
                   onPress={() => {
                     setSelectedFilter(filter);
                     setFilterMenuOpen(false);
                   }}
-                  activeOpacity={0.8}>
-                  <Text style={[styles.filterMenuText, active && styles.filterMenuTextActive]}>{filter}</Text>
+                  activeOpacity={0.8}
+                >
+                  <Text
+                    style={[
+                      styles.filterMenuText,
+                      active && styles.filterMenuTextActive,
+                    ]}
+                  >
+                    {filter}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -812,14 +378,24 @@ const TaskMonitoringScreen = ({navigation}) => {
         </Pressable>
       </Modal>
 
-      <Modal visible={datePickerOpen} transparent animationType="fade" onRequestClose={() => setDatePickerOpen(false)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setDatePickerOpen(false)}>
+      <Modal
+        visible={datePickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDatePickerOpen(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setDatePickerOpen(false)}
+        >
           <Pressable style={styles.datePickerCard} onPress={() => {}}>
             <View style={styles.datePickerAccent} />
             <View style={styles.datePickerHeader}>
               <View style={styles.datePickerTitleWrap}>
                 <Text style={styles.datePickerTitle}>Select Date</Text>
-                <Text style={styles.datePickerSubtitle}>Tap a day to filter tasks</Text>
+                <Text style={styles.datePickerSubtitle}>
+                  Tap a day to filter tasks
+                </Text>
               </View>
             </View>
 
@@ -828,49 +404,75 @@ const TaskMonitoringScreen = ({navigation}) => {
                 <TouchableOpacity
                   style={styles.datePickerNav}
                   onPress={() => moveCalendarYear(-1)}
-                  activeOpacity={0.8}>
-                  <MaterialCommunityIcons name="skip-previous" size={20} color={appTheme.colors.neutral.text} />
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons
+                    name="skip-previous"
+                    size={20}
+                    color={appTheme.colors.neutral.text}
+                  />
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.datePickerNav}
                   onPress={() => moveCalendarMonth(-1)}
-                  activeOpacity={0.8}>
-                  <MaterialCommunityIcons name="chevron-left" size={22} color={appTheme.colors.neutral.text} />
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons
+                    name="chevron-left"
+                    size={22}
+                    color={appTheme.colors.neutral.text}
+                  />
                 </TouchableOpacity>
               </View>
 
               <View style={styles.datePickerMonthPill}>
-                <Text style={styles.datePickerMonthInline}>{getMonthLabel(calendarMonth)}</Text>
+                <Text style={styles.datePickerMonthInline}>
+                  {getMonthLabel(calendarMonth)}
+                </Text>
               </View>
 
               <View style={styles.datePickerNavRow}>
                 <TouchableOpacity
                   style={styles.datePickerNav}
                   onPress={() => moveCalendarMonth(1)}
-                  activeOpacity={0.8}>
-                  <MaterialCommunityIcons name="chevron-right" size={22} color={appTheme.colors.neutral.text} />
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons
+                    name="chevron-right"
+                    size={22}
+                    color={appTheme.colors.neutral.text}
+                  />
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.datePickerNav}
                   onPress={() => moveCalendarYear(1)}
-                  activeOpacity={0.8}>
-                  <MaterialCommunityIcons name="skip-next" size={20} color={appTheme.colors.neutral.text} />
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons
+                    name="skip-next"
+                    size={20}
+                    color={appTheme.colors.neutral.text}
+                  />
                 </TouchableOpacity>
               </View>
             </View>
 
             <View style={styles.weekRow}>
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, index) => (
-                <Text key={`${day}-${index}`} style={styles.weekDay}>
-                  {day}
-                </Text>
-              ))}
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(
+                (day, index) => (
+                  <Text key={`${day}-${index}`} style={styles.weekDay}>
+                    {day}
+                  </Text>
+                ),
+              )}
             </View>
 
             <View style={styles.calendarGrid}>
               {calendarDays.map((day, index) => {
                 if (!day) {
-                  return <View key={`empty-${index}`} style={styles.calendarCell} />;
+                  return (
+                    <View key={`empty-${index}`} style={styles.calendarCell} />
+                  );
                 }
 
                 const dayKey = formatDate(day);
@@ -879,14 +481,28 @@ const TaskMonitoringScreen = ({navigation}) => {
                 return (
                   <TouchableOpacity
                     key={dayKey}
-                    style={[styles.calendarCell, styles.calendarDay, active && styles.calendarDayActive]}
+                    style={[
+                      styles.calendarCell,
+                      styles.calendarDay,
+                      active && styles.calendarDayActive,
+                    ]}
                     onPress={() => {
                       setSelectedDate(dayKey);
-                      setCalendarMonth(new Date(day.getFullYear(), day.getMonth(), 1));
+                      setCalendarMonth(
+                        new Date(day.getFullYear(), day.getMonth(), 1),
+                      );
                       setDatePickerOpen(false);
                     }}
-                    activeOpacity={0.8}>
-                    <Text style={[styles.calendarDayText, active && styles.calendarDayTextActive]}>{day.getDate()}</Text>
+                    activeOpacity={0.8}
+                  >
+                    <Text
+                      style={[
+                        styles.calendarDayText,
+                        active && styles.calendarDayTextActive,
+                      ]}
+                    >
+                      {day.getDate()}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
@@ -900,10 +516,15 @@ const TaskMonitoringScreen = ({navigation}) => {
                   setCalendarMonth(new Date());
                   setDatePickerOpen(false);
                 }}
-                activeOpacity={0.8}>
+                activeOpacity={0.8}
+              >
                 <Text style={styles.secondaryActionText}>Today</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.primaryAction} onPress={() => setDatePickerOpen(false)} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={styles.primaryAction}
+                onPress={() => setDatePickerOpen(false)}
+                activeOpacity={0.8}
+              >
                 <Text style={styles.primaryActionText}>Close</Text>
               </TouchableOpacity>
             </View>
@@ -911,48 +532,91 @@ const TaskMonitoringScreen = ({navigation}) => {
         </Pressable>
       </Modal>
 
-      <Modal visible={!!selectedTask} transparent animationType="fade" onRequestClose={() => setSelectedTask(null)}>
-        <Pressable style={styles.detailOverlay} onPress={() => setSelectedTask(null)}>
+      <Modal
+        visible={!!selectedTask}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedTask(null)}
+      >
+        <Pressable
+          style={styles.detailOverlay}
+          onPress={() => setSelectedTask(null)}
+        >
           <Pressable style={styles.detailCard} onPress={() => {}}>
             <View style={styles.detailHeader}>
               <View style={styles.detailHeaderText}>
                 <Text style={styles.detailType}>{selectedTask?.type}</Text>
                 <Text style={styles.detailTitle}>{selectedTask?.title}</Text>
               </View>
-              <TouchableOpacity style={styles.closeButton} onPress={() => setSelectedTask(null)}>
-                <MaterialCommunityIcons name="close" size={20} color={appTheme.colors.neutral.text} />
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => setSelectedTask(null)}
+              >
+                <MaterialCommunityIcons
+                  name="close"
+                  size={20}
+                  color={appTheme.colors.neutral.text}
+                />
               </TouchableOpacity>
             </View>
 
             <View style={styles.detailMetaRow}>
               <View style={styles.detailMetaItem}>
-                <MaterialCommunityIcons name="calendar-month-outline" size={16} color={appTheme.colors.neutral.textMuted} />
-          <Text style={styles.detailMetaText}>{formatDisplayDate(selectedTask?.date)}</Text>
-              </View>
-              <View style={styles.detailMetaItem}>
-                <MaterialCommunityIcons name="map-marker-outline" size={16} color={appTheme.colors.neutral.textMuted} />
-                <Text style={styles.detailMetaText}>{selectedTask?.address}</Text>
+                <MaterialCommunityIcons
+                  name="calendar-month-outline"
+                  size={16}
+                  color={appTheme.colors.neutral.textMuted}
+                />
+                <Text style={styles.detailMetaText}>
+                  {formatDisplayDate(selectedTask?.date)}
+                </Text>
               </View>
             </View>
 
             <View style={styles.detailRow}>
               <View style={styles.detailPill}>
                 <MaterialCommunityIcons
-                  name={STATUS_META[selectedTask?.status]?.icon ?? 'clock-outline'}
+                  name={
+                    STATUS_META[selectedTask?.status]?.icon ?? 'clock-outline'
+                  }
                   size={14}
-                  color={STATUS_META[selectedTask?.status]?.color ?? appTheme.colors.status.warning}
+                  color={
+                    STATUS_META[selectedTask?.status]?.color ??
+                    appTheme.colors.status.warning
+                  }
                 />
-                <Text style={[styles.detailPillText, {color: STATUS_META[selectedTask?.status]?.color ?? appTheme.colors.status.warning}]}>
+                <Text
+                  style={[
+                    styles.detailPillText,
+                    {
+                      color:
+                        STATUS_META[selectedTask?.status]?.color ??
+                        appTheme.colors.status.warning,
+                    },
+                  ]}
+                >
                   {selectedTask?.status}
                 </Text>
               </View>
               <View style={styles.detailPill}>
-                <MaterialCommunityIcons name="image-multiple-outline" size={14} color={appTheme.colors.neutral.textMuted} />
-                <Text style={styles.detailPillText}>{selectedTask?.images} photos</Text>
+                <MaterialCommunityIcons
+                  name="image-multiple-outline"
+                  size={14}
+                  color={appTheme.colors.neutral.textMuted}
+                />
+                <Text style={styles.detailPillText}>
+                  {selectedTask?.images} photos
+                </Text>
               </View>
               <View style={styles.detailPill}>
-                <MaterialCommunityIcons name="video-outline" size={14} color={appTheme.colors.neutral.textMuted} />
-                <Text style={styles.detailPillText}>{selectedTask?.videos} videos</Text>
+                <MaterialCommunityIcons
+                  name="video-outline"
+                  size={14}
+                  color={appTheme.colors.neutral.textMuted}
+                />
+                <Text style={styles.detailPillText}>
+                  {selectedTask?.videos} videos
+                </Text>
               </View>
             </View>
 
@@ -1014,7 +678,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.06,
     shadowRadius: 10,
-    shadowOffset: {width: 0, height: 4},
+    shadowOffset: { width: 0, height: 4 },
     elevation: 5,
   },
   dateChip: {
@@ -1061,7 +725,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.16,
     shadowRadius: 8,
-    shadowOffset: {width: 0, height: 3},
+    shadowOffset: { width: 0, height: 3 },
     elevation: 6,
   },
   menuOverlay: {
@@ -1081,7 +745,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.12,
     shadowRadius: 10,
-    shadowOffset: {width: 0, height: 5},
+    shadowOffset: { width: 0, height: 5 },
     elevation: 8,
   },
   filterMenuItem: {
@@ -1131,7 +795,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.06,
     shadowRadius: 8,
-    shadowOffset: {width: 0, height: 3},
+    shadowOffset: { width: 0, height: 3 },
     elevation: 4,
   },
   cardPressed: {
@@ -1256,7 +920,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.14,
     shadowRadius: 18,
-    shadowOffset: {width: 0, height: 10},
+    shadowOffset: { width: 0, height: 10 },
     elevation: 12,
   },
   datePickerAccent: {
@@ -1355,7 +1019,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.14,
     shadowRadius: 8,
-    shadowOffset: {width: 0, height: 4},
+    shadowOffset: { width: 0, height: 4 },
     elevation: 6,
   },
   calendarDayText: {
@@ -1394,7 +1058,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.12,
     shadowRadius: 8,
-    shadowOffset: {width: 0, height: 4},
+    shadowOffset: { width: 0, height: 4 },
     elevation: 5,
   },
   primaryActionText: {

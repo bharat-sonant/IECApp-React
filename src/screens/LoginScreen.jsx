@@ -14,6 +14,7 @@ import {
 import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
+import {useLocation} from '../context/LocationContext';
 import {validateEmployeeLogin} from '../services/loginService';
 import {saveLoginSession} from '../services/sessionService';
 
@@ -26,6 +27,7 @@ const LoginScreen = ({navigation}) => {
   const [errors, setErrors] = useState({});
   const [loginMessage, setLoginMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const {startTracking} = useLocation();
 
   const cardWidth = useMemo(() => {
     const maxWidth = 460;
@@ -86,6 +88,7 @@ const LoginScreen = ({navigation}) => {
       }
 
       await saveLoginSession(result);
+      await startTracking();
       navigation.replace('Dashboard', result);
     } catch (error) {
       setLoginMessage(error?.message || 'Unable to save session. Please try again.');

@@ -9,9 +9,13 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import appTheme from '../theme/appTheme';
-import {loadLoginSession} from '../services/sessionService';
+import { loadLoginSession } from '../services/sessionService';
+import { useLocation } from '../context/LocationContext';
 
 const LauncherScreen = ({ navigation }) => {
   const { width, height } = useWindowDimensions();
@@ -22,8 +26,12 @@ const LauncherScreen = ({ navigation }) => {
   const fade = useRef(new Animated.Value(0)).current;
   const compact = height < 700;
   const logoSize = Math.min(width * 0.38, 150);
+  const { stopTracking } = useLocation();
 
   useEffect(() => {
+    // Stop location tracking when showing launcher (logged out)
+    stopTracking();
+    
     let isActive = true;
     const goToNextScreen = setTimeout(async () => {
       let session = null;
@@ -105,7 +113,7 @@ const LauncherScreen = ({ navigation }) => {
       drift2.stopAnimation();
       fade.stopAnimation();
     };
-  }, [drift1, drift2, fade, navigation, pulse]);
+  }, [drift1, drift2, fade, navigation, pulse, stopTracking]);
 
   const drift1Y = drift1.interpolate({
     inputRange: [0, 1],
@@ -126,15 +134,24 @@ const LauncherScreen = ({ navigation }) => {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-      <StatusBar barStyle="dark-content" backgroundColor={appTheme.colors.neutral.background} />
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor={appTheme.colors.neutral.background}
+      />
       <View style={styles.container}>
         <Animated.View
           pointerEvents="none"
-          style={[styles.blobOne, { transform: [{ translateX: drift1X }, { translateY: drift1Y }] }]}
+          style={[
+            styles.blobOne,
+            { transform: [{ translateX: drift1X }, { translateY: drift1Y }] },
+          ]}
         />
         <Animated.View
           pointerEvents="none"
-          style={[styles.blobTwo, { transform: [{ translateX: drift2X }, { translateY: drift2Y }] }]}
+          style={[
+            styles.blobTwo,
+            { transform: [{ translateX: drift2X }, { translateY: drift2Y }] },
+          ]}
         />
 
         <Animated.View
@@ -176,8 +193,12 @@ const LauncherScreen = ({ navigation }) => {
             </View>
           </Animated.View>
 
-          <Text style={[styles.caption, compact && styles.captionCompact]}>Field Operations</Text>
-          <Text style={[styles.motivation, compact && styles.motivationCompact]}>
+          <Text style={[styles.caption, compact && styles.captionCompact]}>
+            Field Operations
+          </Text>
+          <Text
+            style={[styles.motivation, compact && styles.motivationCompact]}
+          >
             Stay ready, stay sharp.
           </Text>
 
@@ -189,7 +210,12 @@ const LauncherScreen = ({ navigation }) => {
         </Animated.View>
 
         <View style={styles.footerWrap}>
-          <Text style={styles.footer}>Powered by <Text style={appTheme.colors.brand.secondary}>Wevois Labes Pvt Ltd</Text></Text>
+          <Text style={styles.footer}>
+            Powered by{' '}
+            <Text style={appTheme.colors.brand.secondary}>
+              Wevois Labes Pvt Ltd
+            </Text>
+          </Text>
         </View>
       </View>
     </SafeAreaView>
@@ -245,7 +271,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.20)',
     shadowColor: '#000',
-    shadowOpacity: 0.10,
+    shadowOpacity: 0.1,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 4,
