@@ -87,9 +87,24 @@ jobs:
       - name: Decode and verify release keystore
         run: |
           printf '%s' "${{ secrets.MYAPP_UPLOAD_KEYSTORE_BASE64 }}" | base64 --decode > android/app/myapp-release-key.jks
-          keytool -list -v -storetype PKCS12 \
+          SECRET_ALIAS=$(printf '%s' "${{ secrets.MYAPP_UPLOAD_KEY_ALIAS }}" | tr -d '\r' | xargs)
+          if [ -n "$SECRET_ALIAS" ]; then
+            KEY_ALIAS="$SECRET_ALIAS"
+          else
+            KEY_ALIAS=$(keytool -list -v -storetype PKCS12 \
             -keystore android/app/myapp-release-key.jks \
-            -storepass "${{ secrets.MYAPP_UPLOAD_STORE_PASSWORD }}"
+            -storepass "${{ secrets.MYAPP_UPLOAD_STORE_PASSWORD }}" \
+            | awk -F': ' '/Alias name:/{print $2; exit}')
+          fi
+
+          if [ -z "$KEY_ALIAS" ]; then
+            echo "Unable to detect the release key alias from the keystore."
+            exit 1
+          fi
+
+          echo "Detected release key alias: $KEY_ALIAS"
+          echo "Using GitHub secret alias: ${SECRET_ALIAS:-<auto-detected>}"
+          echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
 
       - name: Build release APK
         run: |
@@ -98,7 +113,7 @@ jobs:
           ./gradlew clean assembleRelease \
             -PMYAPP_UPLOAD_STORE_FILE=myapp-release-key.jks \
             -PMYAPP_UPLOAD_STORE_PASSWORD="${{ secrets.MYAPP_UPLOAD_STORE_PASSWORD }}" \
-            -PMYAPP_UPLOAD_KEY_ALIAS="${{ secrets.MYAPP_UPLOAD_KEY_ALIAS }}" \
+            -PMYAPP_UPLOAD_KEY_ALIAS="${{ env.RELEASE_KEY_ALIAS }}" \
             -PMYAPP_UPLOAD_KEY_PASSWORD="${{ secrets.MYAPP_UPLOAD_KEY_PASSWORD }}"
 
       - name: Verify release APK artifact
