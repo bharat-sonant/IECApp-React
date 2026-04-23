@@ -1,5 +1,6 @@
 import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
+import { CITY } from '../firebase/firebaseConfig';
 
 const getFirstText = (...values) => {
   for (const value of values) {
@@ -11,6 +12,151 @@ const getFirstText = (...values) => {
     }
   }
   return '';
+};
+
+const monthNames = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+const resolveMediaContext = (taskData = null, parentData = null) => {
+  const source = parentData || taskData || {};
+  return {
+    userId: extractUserId(source || taskData),
+    taskId: extractTaskId(source || taskData),
+    itemKey: extractItemKey(source || taskData),
+    dateStr: getDateFromTaskData(source || taskData),
+  };
+};
+
+const buildStorageUrl = (
+  path,
+  type = 'media',
+  taskData = null,
+  parentData = null,
+) => {
+  if (!path) return null;
+  if (path.startsWith('http')) return path;
+
+  console.log(`[MediaURL] Building ${type} URL from:`, path);
+
+  // Construct full path from filename + task data
+  let fullPath = path;
+
+  if (!path.includes('IECData/') && (taskData || parentData)) {
+    const { userId, taskId, itemKey, dateStr } = resolveMediaContext(
+      taskData,
+      parentData,
+    );
+
+    if (dateStr) {
+      const year = dateStr.split('-')[0];
+      const monthNum = parseInt(dateStr.split('-')[1], 10);
+      const month = monthNames[monthNum - 1];
+
+      // Construct the full Firebase Storage path
+      // Format: DevTest/IECData/IECTasksImages/{userId}/{year}/{month}/{dateStr}/{taskId}/{itemKey}/{filename}
+      if (type === 'video') {
+        fullPath = `DevTest/IECData/IECTasksVideos/${userId}/${year}/${month}/${dateStr}/${taskId}/${itemKey}/${path}`;
+      } else {
+        fullPath = `DevTest/IECData/IECTasksImages/${userId}/${year}/${month}/${dateStr}/${taskId}/${itemKey}/${path}`;
+      }
+    }
+  }
+
+  const encodedPath = encodeURIComponent(fullPath);
+  const url = `${CITY.firebaseStoragePath}${encodedPath}?alt=media`;
+  console.log(`[MediaURL] ${type} -> fullPath:`, fullPath, '-> url:', url);
+  return url;
+};
+
+const extractUserId = taskData => {
+  if (!taskData) return 'unknown';
+  return getFirstText(
+    taskData?.userId,
+    taskData?.userID,
+    taskData?.createdBy,
+    taskData?.created_by,
+    taskData?.loginId,
+    taskData?.employeeId,
+    'unknown',
+  );
+};
+
+const extractTaskId = taskData => {
+  if (!taskData) return 'task';
+  return getFirstText(
+    taskData?.taskId,
+    taskData?.taskID,
+    taskData?.taskKey,
+    taskData?.key,
+    taskData?.id,
+    'task',
+  );
+};
+
+const extractItemKey = taskData => {
+  if (!taskData) return '1';
+  return getFirstText(
+    taskData?.key,
+    taskData?.itemKey,
+    taskData?.mediaKey,
+    taskData?.mediaCount,
+    taskData?.count,
+    taskData?.taskCount,
+    '1',
+  );
+};
+
+const extractUserIdFromPath = path => {
+  if (typeof path !== 'string' || !path.trim()) {
+    return '';
+  }
+
+  const normalized = path.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  const taskIndex = parts.findIndex(part => part === 'IECTasks');
+  if (taskIndex >= 0 && parts.length > taskIndex + 1) {
+    return getFirstText(parts[taskIndex + 1], '');
+  }
+
+  return '';
+};
+
+const resolveSessionUserId = session =>
+  getFirstText(
+    session?.loginId,
+    session?.loginID,
+    session?.login_id,
+    session?.userId,
+    session?.userID,
+    session?.employee?.userId,
+    session?.employee?.userID,
+    session?.employee?.id,
+    session?.employee?.employeeId,
+    session?.employee?.employeeID,
+    session?.employee?.loginId,
+    session?.employee?.loginID,
+    session?.employee?.login_id,
+  );
+
+const getDateFromTaskData = taskData => {
+  const _at = taskData?._at || taskData?.createdOn || taskData?.date;
+  if (_at) {
+    const dateStr = String(_at).split(' ')[0];
+    if (dateStr.includes('-')) return dateStr;
+  }
+  return null;
 };
 
 const isPlainObject = value =>
@@ -235,6 +381,7 @@ const flattenTaskNode = (
   fallbackType,
   sourceLabel,
   taskCatalog = null,
+  baseUserId = '',
 ) => {
   const seen = new Set();
   const walk = (node, trail = []) => {
@@ -254,23 +401,30 @@ const flattenTaskNode = (
 
       if (isTraversableNode(item)) {
         if (isTaskLeafNode(item)) {
-          const taskKey = getFirstText(
+          const taskId = getFirstText(
             nextTrail.length >= 2 ? nextTrail[nextTrail.length - 2] : '',
-            key,
-          );
-          const id = getFirstText(
-            item?.id,
-            item?.Id,
             item?.taskId,
             item?.TaskId,
+            item?.taskKey,
+            item?.TaskKey,
+            item?.id,
             key,
-            `${sourceLabel}-${index}`,
           );
+          const itemKey = getFirstText(
+            key,
+            item?.key,
+            item?.itemKey,
+            item?.mediaKey,
+            item?.count,
+            item?.taskCount,
+            '1',
+          );
+          const id = getFirstText(item?.id, item?.Id, `${sourceLabel}-${index}`);
           const title =
             buildTaskTitle(item) ||
-            resolveCatalogTaskTitle(taskCatalog, taskKey) ||
+            resolveCatalogTaskTitle(taskCatalog, taskId) ||
             resolveCatalogTaskTitle(taskCatalog, id) ||
-            taskKey ||
+            taskId ||
             id;
           const status = resolveTaskStatus(item);
           const type = buildTaskType(item, fallbackType);
@@ -291,17 +445,44 @@ const flattenTaskNode = (
           );
           const approvedAt = getFirstText(item?.approvedAt, item?.ApprovedAt);
 
-          const fullPath = `${sourceLabel}:${nextTrail.join('/')}:${id}`;
+          const fullPath = `${sourceLabel}:${nextTrail.join('/')}:${id || itemKey}`;
           const signature = `${fullPath}:${title}:${status}:${type}`;
           if (seen.has(signature)) {
             return [];
           }
           seen.add(signature);
 
+          const mediaContext = {
+            userId: baseUserId || extractUserId(item),
+            taskId,
+            itemKey,
+            mediaKey: itemKey,
+            date: date || _at,
+            _at: _at || date,
+          };
+
+          const imageKeys = Object.keys(item).filter(name =>
+            /^image\d+$/i.test(name),
+          );
+          const videoKeys = Object.keys(item).filter(name =>
+            /^video\d+$/i.test(name),
+          );
+
+          // Build full path from filename + task data
+          const imageUrls = imageKeys
+            .map(k => buildStorageUrl(item[k], 'image', mediaContext, mediaContext))
+            .filter(Boolean);
+          const videoUrls = videoKeys
+            .map(k => buildStorageUrl(item[k], 'video', mediaContext, mediaContext))
+            .filter(Boolean);
+
           return [
             {
               id: fullPath,
-              taskKey,
+              userId: baseUserId || extractUserId(item),
+              taskId,
+              key: itemKey,
+              mediaKey: itemKey,
               listKey: fullPath,
               title,
               status,
@@ -317,16 +498,23 @@ const flattenTaskNode = (
                 item?.location,
                 item?.Location,
               ),
+              latLng: getFirstText(
+                item?.latLng,
+                item?.LatLng,
+                item?.latitude && item?.longitude
+                  ? `${item.latitude},${item.longitude}`
+                  : '',
+              ),
               remark: getFirstText(
                 item?.remark,
                 item?.Remark,
                 item?.remarks,
                 item?.Remarks,
               ),
-              images: Object.keys(item).filter(name => /^image\d+$/i.test(name))
-                .length,
-              videos: Object.keys(item).filter(name => /^video\d+$/i.test(name))
-                .length,
+              images: imageUrls.length,
+              videos: videoUrls.length,
+              imageUrls,
+              videoUrls,
             },
           ];
         }
@@ -365,9 +553,12 @@ const flattenTaskNode = (
           _at: '',
           approvedAt: '',
           address: '',
+          latLng: '',
           remark: '',
           images: 0,
           videos: 0,
+          imageUrls: [],
+          videoUrls: [],
         },
       ];
     });
@@ -378,37 +569,47 @@ const flattenTaskNode = (
 
 export const loadTasks = async selectedDate => {
   const session = await loadLoginSession();
-  const loginId = getFirstText(
-    session?.loginId,
-    session?.employee?.userId,
-    session?.employee?.id,
-    session?.employee?.loginId,
-  );
+  let loginId = resolveSessionUserId(session);
+
+  const date = parseDate(selectedDate);
+  const dateParts = getCurrentDateParts(date);
+  const currentTaskPaths = loginId
+    ? [`IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.month}/${dateParts.isoDate}`]
+    : [];
+
+  const [taskCatalog, currentResult] = await Promise.all([
+    getData('IECData/Tasks'),
+    currentTaskPaths.length
+      ? readFirstExistingPath(currentTaskPaths)
+      : Promise.resolve({ path: null, value: null }),
+  ]);
+
+  if (!loginId) {
+    loginId = extractUserIdFromPath(currentResult.path);
+  }
 
   if (!loginId) {
     return [];
   }
-
-  const date = parseDate(selectedDate);
-  const dateParts = getCurrentDateParts(date);
-  const currentTaskPaths = [
-    `IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.month}/${dateParts.isoDate}`,
-  ];
-
-  const [taskCatalog, currentResult] = await Promise.all([
-    getData('IECData/Tasks'),
-    readFirstExistingPath(currentTaskPaths),
-  ]);
 
   const currentTasks = flattenTaskNode(
     currentResult.value,
     'Task',
     'Task',
     taskCatalog,
+    loginId,
   ).map(task => ({
     ...task,
     date: task.date || dateParts.isoDate,
   }));
+
+  console.log('[TaskMonitoring] loadTasks debug', {
+    selectedDate,
+    loginId,
+    taskPath: currentResult.path,
+    taskCount: currentTasks.length,
+    taskList: currentTasks,
+  });
 
   return currentTasks;
 };

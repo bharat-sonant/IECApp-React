@@ -16,6 +16,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
 import { useTaskMonitoring } from '../actions/taskMonitoringActions';
+import MediaViewer from '../components/MediaViewer/MediaViewer';
 
 const STATUS_META = {
   Pending: {
@@ -131,6 +132,9 @@ const TaskMonitoringScreen = ({ navigation }) => {
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
+  const [mediaImages, setMediaImages] = useState([]);
+  const [mediaVideos, setMediaVideos] = useState([]);
 
   const calendarDays = useMemo(
     () => getDaysInMonth(calendarMonth),
@@ -147,7 +151,7 @@ const TaskMonitoringScreen = ({ navigation }) => {
   const handleOpenDatePicker = useCallback(() => {
     setCalendarMonth(parseDate(selectedDate));
     setDatePickerOpen(true);
-  }, [selectedDate]);
+  }, [selectedDate, setCalendarMonth]);
 
   const renderTask = ({ item }) => {
     const status = STATUS_META[item.status] ?? STATUS_META.Pending;
@@ -188,8 +192,6 @@ const TaskMonitoringScreen = ({ navigation }) => {
         <Text style={styles.cardTitle} numberOfLines={2}>
           {item.title}
         </Text>
-
-       
 
         <View style={styles.cardFooter}>
           <View
@@ -620,11 +622,40 @@ const TaskMonitoringScreen = ({ navigation }) => {
               </View>
             </View>
 
+            {(selectedTask?.images > 0 || selectedTask?.videos > 0) && (
+              <TouchableOpacity
+                style={styles.viewMediaButton}
+                onPress={() => {
+                  const imgs = selectedTask?.imageUrls || [];
+                  const vids = selectedTask?.videoUrls || [];
+                  setMediaImages(imgs);
+                  setMediaVideos(vids);
+                  setMediaViewerOpen(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <MaterialCommunityIcons
+                  name="image-multiple"
+                  size={18}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.viewMediaButtonText}>View Media</Text>
+              </TouchableOpacity>
+            )}
+
             <Text style={styles.detailRemarkLabel}>Remark</Text>
             <Text style={styles.detailRemark}>{selectedTask?.remark}</Text>
           </Pressable>
         </Pressable>
       </Modal>
+
+      <MediaViewer
+        visible={mediaViewerOpen}
+        images={mediaImages}
+        videos={mediaVideos}
+        taskMeta={selectedTask}
+        onClose={() => setMediaViewerOpen(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -1156,6 +1187,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '600',
+  },
+  viewMediaButton: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: appTheme.colors.brand.primaryDark,
+    borderRadius: 14,
+    paddingVertical: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
+  },
+  viewMediaButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
 });
 

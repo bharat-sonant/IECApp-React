@@ -257,7 +257,6 @@ export const saveTaskSubmission = async ({
   const normalizedImages = normalizeMediaList(images);
   const normalizedVideos = normalizeMediaList(videos);
   let nextTaskCount = 1;
-  const mediaTaskKey = taskKey;
   const mediaTaskCount = () => nextTaskCount;
 
   const payload = buildOldTaskPayload({
@@ -272,7 +271,7 @@ export const saveTaskSubmission = async ({
     mode,
   });
 
-  // If no valid location, try to fetch from tracking service
+  // If no valid location, try to fetch from tracking service (with geocoded address)
   if (!payload.latLng || (payload.latitude === 0 && payload.longitude === 0)) {
     try {
       const locResult = await getUserCurrentLocation();
@@ -282,11 +281,34 @@ export const saveTaskSubmission = async ({
         locResult.location?.longitude
       ) {
         payload.latLng = `${locResult.location.latitude},${locResult.location.longitude}`;
+        // Also set the address from geocoding (like old Android app)
+        payload.address =
+          locResult.location?.address || STATIC_LOCATION.address;
       }
-    } catch (e) {
-    }
+    } catch (e) {}
   }
 
+  // Build full storage paths for upload queue only
+  const imageStoragePaths = normalizedImages.map((image, index) => {
+    const imageFileName = `image${index + 1}.jpg`;
+    return buildPendingMediaPath({
+      userId,
+      cityName,
+      year,
+      month,
+      currentDate,
+      taskKey: nextTaskCount,
+      taskCount: index + 1,
+      fileName: imageFileName,
+    });
+  });
+
+  const videoStoragePaths = normalizedVideos.map((video, index) => {
+    const videoFileName = `video${index + 1}.mp4`;
+    return `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${nextTaskCount}/${index + 1}/${videoFileName}`;
+  });
+
+  // Save ONLY filename to DB (path will be constructed when reading)
   normalizedImages.forEach((_, index) => {
     payload[`image${index + 1}`] = `image${index + 1}.jpg`;
   });
@@ -294,9 +316,13 @@ export const saveTaskSubmission = async ({
     payload[`video${index + 1}`] = `video${index + 1}.mp4`;
   });
 
+  // Save key info for constructing path later
+  payload.mediaKey = nextTaskCount;
+  payload.mediaCount = nextTaskCount;
+
   const { getDatabase, ref } = require('@react-native-firebase/database');
   const app = await initializeFirebaseApp();
-  const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
+  const db = getDatabase(getDatabase, FIREBASE_CONFIG?.databaseURL);
   const taskBucketRef = ref(db, taskRootPath);
 
   const transactionResult = await taskBucketRef.transaction(current => {
@@ -334,8 +360,7 @@ export const saveTaskSubmission = async ({
         await updateData(taskSourcePath, {
           status: '1',
         });
-      } catch (e) {
-      }
+      } catch (e) {}
     }
   } else if (taskPriority === 'high') {
     // Legacy fallback incase originalPath is missing
@@ -347,37 +372,27 @@ export const saveTaskSubmission = async ({
     });
   }
 
-  for (const image of normalizedImages) {
-    const imageFileName = `image${image.index}.jpg`;
-    const imageStoragePath = buildPendingMediaPath({
-      userId,
-      cityName,
-      year,
-      month,
-      currentDate,
-      taskKey: mediaTaskKey,
-      taskCount: mediaTaskCount(),
-      fileName: imageFileName,
-    });
-    await enqueuePendingMediaUpload({
-      localPath: image.uri,
-      storagePath: imageStoragePath,
-      contentType: 'image/jpeg',
-    });
-  }
+  await Promise.all(
+    normalizedImages.map(async (image, index) => {
+      await enqueuePendingMediaUpload({
+        localPath: image.uri,
+        storagePath: imageStoragePaths[index],
+        contentType: 'image/jpeg',
+      });
+    }),
+  );
 
-  for (const video of normalizedVideos) {
-    const videoFileName = `video${video.index}.mp4`;
-    const videoStoragePath = `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${mediaTaskKey}/${mediaTaskCount()}/${videoFileName}`;
-    await enqueuePendingMediaUpload({
-      localPath: video.uri,
-      storagePath: videoStoragePath,
-      contentType: 'video/mp4',
-    });
-  }
+  await Promise.all(
+    normalizedVideos.map(async (video, index) => {
+      await enqueuePendingMediaUpload({
+        localPath: video.uri,
+        storagePath: videoStoragePaths[index],
+        contentType: 'video/mp4',
+      });
+    }),
+  );
 
-  flushPendingMediaUploads().catch(error => {
-  });
+  flushPendingMediaUploads().catch(error => {});
 
   return {
     ok: true,

@@ -1,4 +1,4 @@
-import {uploadFileToStorage} from '../firebase/firebaseService';
+import { uploadFileToStorage } from '../firebase/firebaseService';
 
 const STORAGE_KEY = '@iec_pending_media_uploads';
 let queueLock = Promise.resolve();
@@ -6,7 +6,8 @@ const MAX_IMAGE_UPLOAD_BYTES = 50 * 1024;
 const IMAGE_UPLOAD_DIMENSION = 800;
 const IMAGE_QUALITY_STEPS = [80, 70, 60, 50, 40, 30];
 
-const asString = value => (value === null || value === undefined ? '' : String(value).trim());
+const asString = value =>
+  value === null || value === undefined ? '' : String(value).trim();
 
 const getAsyncStorage = () => {
   try {
@@ -77,19 +78,36 @@ const getFileSize = async path => {
 };
 
 const prepareImageForUpload = async sourcePath => {
-  const ImageResizer = require('react-native-image-resizer').default;
+  let ImageResizer;
+  try {
+    ImageResizer = require('react-native-image-resizer').default;
+  } catch (e) {
+    console.log('[ImageResizer] Library not found:', e?.message);
+    throw new Error('Image resizer library not available');
+  }
+
+  const RNFS = getRNFS();
   const rawSourcePath = asString(sourcePath);
-  const normalizedSourcePath = rawSourcePath.startsWith('file://') ? rawSourcePath.slice(7) : rawSourcePath;
+  const normalizedSourcePath = rawSourcePath.startsWith('file://')
+    ? rawSourcePath.slice(7)
+    : rawSourcePath;
 
   if (!normalizedSourcePath) {
     throw new Error('Missing image source path');
+  }
+
+  // Check if file exists first
+  const fileExists = await RNFS.exists(normalizedSourcePath);
+  if (!fileExists) {
+    console.log('[ImageResizer] File not found:', normalizedSourcePath);
+    throw new Error(`Cannot read "${normalizedSourcePath}" - file not found`);
   }
 
   let bestPath = normalizedSourcePath;
   let bestSize = await getFileSize(normalizedSourcePath);
 
   if (bestSize <= MAX_IMAGE_UPLOAD_BYTES) {
-    return {path: bestPath, cleanupPath: null, size: bestSize};
+    return { path: bestPath, cleanupPath: null, size: bestSize };
   }
 
   for (const quality of IMAGE_QUALITY_STEPS) {
@@ -102,7 +120,7 @@ const prepareImageForUpload = async sourcePath => {
       0,
       undefined,
       false,
-      {mode: 'contain', onlyScaleDown: true},
+      { mode: 'contain', onlyScaleDown: true },
     );
 
     const resizedPath = asString(resized?.path || resized?.uri || '');
@@ -171,7 +189,7 @@ export const flushPendingMediaUploads = async () => {
   return withQueueLock(async () => {
     const queue = await readQueue();
     if (!queue.length) {
-      return {processed: 0, succeeded: 0, failed: 0, remaining: 0};
+      return { processed: 0, succeeded: 0, failed: 0, remaining: 0 };
     }
 
     const nextQueue = [];
@@ -226,5 +244,15 @@ export const flushPendingMediaUploads = async () => {
   });
 };
 
-export const buildPendingMediaPath = ({userId, cityName, city, year, month, currentDate, taskKey, taskCount, fileName}) =>
-  `${(cityName || city) ? `${cityName || city}/` : ''}IECData/IECTasksImages/${userId}/${year}/${month}/${currentDate}/${taskKey}/${taskCount}/${fileName}`;
+export const buildPendingMediaPath = ({
+  userId,
+  cityName,
+  city,
+  year,
+  month,
+  currentDate,
+  taskKey,
+  taskCount,
+  fileName,
+}) =>
+  `${cityName || city ? `${cityName || city}/` : ''}IECData/IECTasksImages/${userId}/${year}/${month}/${currentDate}/${taskKey}/${taskCount}/${fileName}`;

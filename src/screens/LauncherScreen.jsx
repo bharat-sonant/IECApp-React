@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -16,6 +16,8 @@ import {
 import appTheme from '../theme/appTheme';
 import { loadLoginSession } from '../services/sessionService';
 import { useLocation } from '../context/LocationContext';
+import { checkForUpdates } from '../services/otaService';
+import UpdateModal from '../components/UpdateModal/UpdateModal';
 
 const LauncherScreen = ({ navigation }) => {
   const { width, height } = useWindowDimensions();
@@ -27,26 +29,129 @@ const LauncherScreen = ({ navigation }) => {
   const compact = height < 700;
   const logoSize = Math.min(width * 0.38, 150);
   const { stopTracking } = useLocation();
+  const navigateTimerRef = useRef(null);
+  const updateActionRef = useRef(null);
+  const [otaModal, setOtaModal] = useState({
+    visible: false,
+    title: '',
+    progress: 0,
+    status: '',
+    version: '',
+    description: '',
+    actionLabel: '',
+    isDownloading: false,
+    canStartUpdate: false,
+    showUnavailableMessage: false,
+    unavailableMessage: '',
+    hideActions: false,
+    hideFooterNote: false,
+    nonDismissible: false,
+  });
+
+  const hideUpdateModal = useCallback(() => {
+    setOtaModal(prev => ({ ...prev, visible: false }));
+    updateActionRef.current = null;
+  }, []);
+
+  const startUpdate = useCallback(() => {
+    updateActionRef.current?.();
+  }, []);
 
   useEffect(() => {
     // Stop location tracking when showing launcher (logged out)
     stopTracking();
-    
+
     let isActive = true;
-    const goToNextScreen = setTimeout(async () => {
-      let session = null;
+
+    const runStartup = async () => {
       try {
-        session = await loadLoginSession();
-      } catch {
-        session = null;
-      }
+        const foundUpdate = await checkForUpdates(
+          {
+            onUpdateFound: (
+              version,
+              description,
+              onUpdatePress,
+              options = {},
+            ) => {
+              updateActionRef.current = onUpdatePress;
+              setOtaModal({
+                visible: true,
+                title: options.modalTitle || 'New update available',
+                progress: 0,
+                status:
+                  options.updateType === 'native'
+                    ? 'Update required'
+                    : 'Preparing update...',
+                version: String(version || '').replace(/^v/i, ''),
+                description,
+                actionLabel: options.actionLabel || 'Update Now',
+                isDownloading: false,
+                canStartUpdate: true,
+                showUnavailableMessage: Boolean(options.showUnavailableMessage),
+                unavailableMessage: options.unavailableMessage || '',
+                hideActions: Boolean(options.hideActions),
+                hideFooterNote: Boolean(options.hideFooterNote),
+                nonDismissible: Boolean(options.nonDismissible),
+              });
+            },
+            onProgress: progress => {
+              setOtaModal(prev => ({
+                ...prev,
+                visible: true,
+                isDownloading: true,
+                progress: Number(progress) || 0,
+                status: 'Downloading update...',
+                canStartUpdate: false,
+                hideActions: true,
+              }));
+            },
+            onComplete: () => {
+              hideUpdateModal();
+            },
+            onError: error => {
+              hideUpdateModal();
+              navigateTimerRef.current = setTimeout(() => {
+                if (isActive) {
+                  navigation.replace('Login');
+                }
+              }, 1200);
+            },
+          },
+          null,
+          { skipNativeExit: false },
+        );
 
-      if (!isActive) {
-        return;
-      }
+        if (!isActive || foundUpdate) {
+          return;
+        }
 
-      navigation.replace(session ? 'Dashboard' : 'Login');
-    }, 2000);
+        navigateTimerRef.current = setTimeout(async () => {
+          if (!isActive) return;
+          let session = null;
+          try {
+            session = await loadLoginSession();
+          } catch {
+            session = null;
+          }
+          if (!isActive) return;
+          navigation.replace(session ? 'Dashboard' : 'Login');
+        }, 2000);
+      } catch (error) {
+        navigateTimerRef.current = setTimeout(async () => {
+          if (!isActive) return;
+          let session = null;
+          try {
+            session = await loadLoginSession();
+          } catch {
+            session = null;
+          }
+          if (!isActive) return;
+          navigation.replace(session ? 'Dashboard' : 'Login');
+        }, 2000);
+      }
+    };
+
+    runStartup();
 
     Animated.parallel([
       Animated.timing(fade, {
@@ -107,13 +212,15 @@ const LauncherScreen = ({ navigation }) => {
 
     return () => {
       isActive = false;
-      clearTimeout(goToNextScreen);
+      if (navigateTimerRef.current) {
+        clearTimeout(navigateTimerRef.current);
+      }
       pulse.stopAnimation();
       drift1.stopAnimation();
       drift2.stopAnimation();
       fade.stopAnimation();
     };
-  }, [drift1, drift2, fade, navigation, pulse, stopTracking]);
+  }, [hideUpdateModal, navigation, stopTracking]);
 
   const drift1Y = drift1.interpolate({
     inputRange: [0, 1],
@@ -218,6 +325,24 @@ const LauncherScreen = ({ navigation }) => {
           </Text>
         </View>
       </View>
+
+      <UpdateModal
+        visible={otaModal.visible}
+        title={otaModal.title}
+        progress={otaModal.progress}
+        status={otaModal.status}
+        version={otaModal.version}
+        description={otaModal.description}
+        actionLabel={otaModal.actionLabel}
+        onUpdatePress={startUpdate}
+        isDownloading={otaModal.isDownloading}
+        canStartUpdate={otaModal.canStartUpdate}
+        showUnavailableMessage={otaModal.showUnavailableMessage}
+        unavailableMessage={otaModal.unavailableMessage}
+        hideActions={otaModal.hideActions}
+        hideFooterNote={otaModal.hideFooterNote}
+        nonDismissible={otaModal.nonDismissible}
+      />
     </SafeAreaView>
   );
 };

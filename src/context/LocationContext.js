@@ -68,10 +68,14 @@ export const LocationProvider = ({ children }) => {
 
       // Configure tracking parameters
       setTrackingConfig({
-        gpsIntervalMs: 3000,
+        gpsIntervalMs: 10000,
         accuracyThresholdM: 50,
         minDistanceM: 10,
         snapshotIntervalMs: 60000,
+        stillIntervalMs: 30000, // Drop to 30s when stationary
+        stillSpeedKmh: 3.0,     // Switch if < 3km/h (walking is ~5km/h)
+        stillFixCount: 3,       // Wait 3 fixes before dropping
+        moveFixCount: 2         // Wait 2 fixes before restoring
       });
 
       // Request battery optimization exemption (non-blocking)

@@ -1,0 +1,181 @@
+name: Publish Android Assets
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish_apk:
+        description: 'Build and publish APK'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  detect-config:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.config.outputs.version }}
+      release_tag: ${{ steps.config.outputs.release_tag }}
+      should_publish_apk: ${{ steps.config.outputs.should_publish_apk }}
+      should_publish_ota: ${{ steps.config.outputs.should_publish_ota }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve release config
+        id: config
+        shell: bash
+        run: |
+          VERSION=$(node -e "const fs=require('fs'); const gradle=fs.readFileSync('android/app/build.gradle','utf8'); const gradleVersion=(gradle.match(/versionName\\s+[\"']([^\"']+)[\"']/)||[])[1]; const appv=fs.readFileSync('src/constants/appVersion.js','utf8'); const rel=(appv.match(/RELEASE_VERSION\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]/ )||[])[1]; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')).version; process.stdout.write((gradleVersion || rel || pkg || '1.0.0').trim());")
+          PUBLISH_APK_DEFAULT=$(node -e "const fs=require('fs'); const appv=fs.readFileSync('src/constants/appVersion.js','utf8'); const publish=(appv.match(/PUBLISH_APK_BY_DEFAULT\\s*=\\s*(true|false)/)||[])[1]; process.stdout.write((publish || 'false').toLowerCase());")
+          PUBLISH_OTA_DEFAULT=$(node -e "const fs=require('fs'); const appv=fs.readFileSync('src/constants/appVersion.js','utf8'); const publish=(appv.match(/PUBLISH_OTA_BY_DEFAULT\\s*=\\s*(true|false)/)||[])[1]; process.stdout.write((publish || 'false').toLowerCase());")
+
+          if [ -z "$VERSION" ]; then
+            VERSION="1.0.0"
+          fi
+
+          SHOULD_PUBLISH_APK="$PUBLISH_APK_DEFAULT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.publish_apk }}" = "true" ]; then
+            SHOULD_PUBLISH_APK="true"
+          fi
+
+          SHOULD_PUBLISH_OTA="$PUBLISH_OTA_DEFAULT"
+          if [ "$SHOULD_PUBLISH_APK" = "true" ]; then
+            SHOULD_PUBLISH_OTA="false"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_publish_apk=$SHOULD_PUBLISH_APK" >> "$GITHUB_OUTPUT"
+          echo "should_publish_ota=$SHOULD_PUBLISH_OTA" >> "$GITHUB_OUTPUT"
+
+  publish-apk:
+    runs-on: ubuntu-latest
+    needs: detect-config
+    if: needs.detect-config.outputs.should_publish_apk == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Inject OTA GitHub token
+        run: |
+          if [ -z "${{ secrets.OTA_GITHUB_TOKEN }}" ]; then
+            echo "OTA_GITHUB_TOKEN secret is missing."
+            exit 1
+          fi
+          sed -i 's|export const OTA_GITHUB_TOKEN = ".*";|export const OTA_GITHUB_TOKEN = "${{ secrets.OTA_GITHUB_TOKEN }}";|g' src/constants/appVersion.js
+
+      - name: Decode and verify release keystore
+        run: |
+          printf '%s' "${{ secrets.MYAPP_UPLOAD_KEYSTORE_BASE64 }}" | base64 --decode > android/app/myapp-release-key.jks
+          keytool -list -v -storetype PKCS12 \
+            -keystore android/app/myapp-release-key.jks \
+            -storepass "${{ secrets.MYAPP_UPLOAD_STORE_PASSWORD }}"
+
+      - name: Build release APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew clean assembleRelease \
+            -PMYAPP_UPLOAD_STORE_FILE=myapp-release-key.jks \
+            -PMYAPP_UPLOAD_STORE_PASSWORD="${{ secrets.MYAPP_UPLOAD_STORE_PASSWORD }}" \
+            -PMYAPP_UPLOAD_KEY_ALIAS="${{ secrets.MYAPP_UPLOAD_KEY_ALIAS }}" \
+            -PMYAPP_UPLOAD_KEY_PASSWORD="${{ secrets.MYAPP_UPLOAD_KEY_PASSWORD }}"
+
+      - name: Verify release APK artifact
+        run: test -f android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Rename release APK artifact
+        id: rename_apk
+        run: |
+          RELEASE_DATE=$(TZ=Asia/Kolkata date +"%d %b %Y")
+          APK_ASSET_NAME="IEC App (${RELEASE_DATE}).apk"
+          mv "android/app/build/outputs/apk/release/app-release.apk" "android/app/build/outputs/apk/release/${APK_ASSET_NAME}"
+          echo "apk_asset_name=${APK_ASSET_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.detect-config.outputs.release_tag }}
+          name: Release ${{ needs.detect-config.outputs.version }}
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          files: |
+            android/app/build/outputs/apk/release/${{ steps.rename_apk.outputs.apk_asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-ota:
+    runs-on: ubuntu-latest
+    needs: detect-config
+    if: needs.detect-config.outputs.should_publish_ota == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Inject OTA GitHub token
+        run: |
+          if [ -z "${{ secrets.OTA_GITHUB_TOKEN }}" ]; then
+            echo "OTA_GITHUB_TOKEN secret is missing."
+            exit 1
+          fi
+          sed -i 's|export const OTA_GITHUB_TOKEN = ".*";|export const OTA_GITHUB_TOKEN = "${{ secrets.OTA_GITHUB_TOKEN }}";|g' src/constants/appVersion.js
+
+      - name: Build OTA JS bundle
+        run: |
+          mkdir -p android/app/build/outputs/ota
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/build/outputs/ota/index.android.bundle \
+            --assets-dest android/app/build/outputs/ota
+          cd android/app/build/outputs/ota
+          zip -r ../ota-package.zip .
+
+      - name: Verify OTA artifact
+        run: test -f android/app/build/outputs/ota-package.zip
+
+      - name: Publish GitHub Release with OTA package
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.detect-config.outputs.release_tag }}
+          name: Release ${{ needs.detect-config.outputs.version }}
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          files: |
+            android/app/build/outputs/ota-package.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

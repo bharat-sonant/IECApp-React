@@ -1,11 +1,27 @@
-import React, {useRef, useState, useEffect} from 'react';
-import {Modal, StyleSheet, View, TouchableOpacity, ActivityIndicator, Text, StatusBar} from 'react-native';
-import {Camera, useCameraDevice, useCameraPermission} from 'react-native-vision-camera';
+import React, { useRef, useState, useEffect } from 'react';
+import {
+  Modal,
+  StyleSheet,
+  View,
+  TouchableOpacity,
+  ActivityIndicator,
+  Text,
+  StatusBar,
+  LogBox,
+} from 'react-native';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+} from 'react-native-vision-camera';
 import ImageResizer from '@bam.tech/react-native-image-resizer';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
+// Suppress the TensorFlow model error at startup
+LogBox.ignoreLogs(['Cannot read', 'this model does not support', 'TFLite']);
+
+const ReusableCamera = ({ visible, onClose, onPictureTaken }) => {
   const { hasPermission, requestPermission } = useCameraPermission();
   const [cameraPosition, setCameraPosition] = useState('back');
   const device = useCameraDevice(cameraPosition);
@@ -19,7 +35,7 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
   }, [visible, hasPermission, requestPermission]);
 
   const toggleCamera = () => {
-    setCameraPosition(prev => prev === 'back' ? 'front' : 'back');
+    setCameraPosition(prev => (prev === 'back' ? 'front' : 'back'));
   };
 
   const handleCapture = async () => {
@@ -29,7 +45,7 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
       const photo = await camera.current.takePhoto({
         flash: 'auto',
       });
-      
+
       // Standard Survey App compression: 1200x1200 max, 80% JPEG limit
       const resizedImage = await ImageResizer.createResizedImage(
         `file://${photo.path}`,
@@ -38,9 +54,9 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
         'JPEG',
         80,
         0,
-        null
+        null,
       );
-      
+
       onPictureTaken(resizedImage.uri);
       onClose();
     } catch {
@@ -52,15 +68,26 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="fade" transparent={false} onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="fade"
+      transparent={false}
+      onRequestClose={onClose}
+    >
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#000" />
-        
+
         {!hasPermission ? (
           <View style={styles.centerMode}>
-            <Text style={styles.noAccessText}>Camera permission is required.</Text>
-            <TouchableOpacity style={styles.requestBtn} onPress={requestPermission} activeOpacity={0.8}>
-               <Text style={styles.requestBtnText}>Allow Camera Access</Text>
+            <Text style={styles.noAccessText}>
+              Camera permission is required.
+            </Text>
+            <TouchableOpacity
+              style={styles.requestBtn}
+              onPress={requestPermission}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.requestBtnText}>Allow Camera Access</Text>
             </TouchableOpacity>
           </View>
         ) : !device ? (
@@ -78,44 +105,68 @@ const ReusableCamera = ({visible, onClose, onPictureTaken}) => {
             />
 
             {/* Seamless Absolute Overlay Grid */}
-            <SafeAreaView style={styles.overlayContainer} edges={['top', 'bottom']} pointerEvents="box-none">
-              
+            <SafeAreaView
+              style={styles.overlayContainer}
+              edges={['top', 'bottom']}
+              pointerEvents="box-none"
+            >
               {/* TOP HEADER CONTROLS */}
               <View style={styles.topBar}>
-                <TouchableOpacity style={styles.iconBtn} onPress={onClose} activeOpacity={0.7}>
+                <TouchableOpacity
+                  style={styles.iconBtn}
+                  onPress={onClose}
+                  activeOpacity={0.7}
+                >
                   <MaterialCommunityIcons name="close" size={26} color="#FFF" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.iconBtn} activeOpacity={0.7} onPress={() => {}}>
-                  <MaterialCommunityIcons name="flash-auto" size={24} color="#FFF" />
+                <TouchableOpacity
+                  style={styles.iconBtn}
+                  activeOpacity={0.7}
+                  onPress={() => {}}
+                >
+                  <MaterialCommunityIcons
+                    name="flash-auto"
+                    size={24}
+                    color="#FFF"
+                  />
                 </TouchableOpacity>
               </View>
-              
+
               <View style={styles.spacer} />
 
               {/* BOTTOM CAMERA CONTROLS */}
               <View style={styles.bottomArea}>
                 <View style={styles.controlsRow}>
                   <TouchableOpacity style={styles.iconBtnGhost} disabled />
-                  
+
                   {/* Premium Capture Ring effect */}
-                  <TouchableOpacity 
-                     onPress={handleCapture}
-                     style={styles.captureRing}
-                     disabled={isProcessing}
-                     activeOpacity={0.8}
+                  <TouchableOpacity
+                    onPress={handleCapture}
+                    style={styles.captureRing}
+                    disabled={isProcessing}
+                    activeOpacity={0.8}
                   >
                     <View style={styles.captureInner}>
-                       {isProcessing && <ActivityIndicator color="#0B1F2A" />}
+                      {isProcessing && <ActivityIndicator color="#0B1F2A" />}
                     </View>
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={styles.iconBtnFlip} onPress={toggleCamera} activeOpacity={0.7}>
-                    <MaterialCommunityIcons name="camera-flip-outline" size={30} color="#FFF" />
+                  <TouchableOpacity
+                    style={styles.iconBtnFlip}
+                    onPress={toggleCamera}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialCommunityIcons
+                      name="camera-flip-outline"
+                      size={30}
+                      color="#FFF"
+                    />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.bottomInstructionText}>Take Photo for Record</Text>
+                <Text style={styles.bottomInstructionText}>
+                  Take Photo for Record
+                </Text>
               </View>
-
             </SafeAreaView>
           </>
         )}

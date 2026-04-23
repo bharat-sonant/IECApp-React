@@ -26,6 +26,10 @@ class LocationForegroundService : Service() {
         private const val DEFAULT_ACCURACY_THRESHOLD_M = 50f
         private const val DEFAULT_SNAPSHOT_INTERVAL_MS = 60_000L
         private const val DEFAULT_MIN_DISTANCE_M       = 10f
+        private const val DEFAULT_STILL_INTERVAL_MS    = 30_000L
+        private const val DEFAULT_STILL_SPEED_KMH      = 3.0f
+        private const val DEFAULT_STILL_FIX_COUNT      = 3
+        private const val DEFAULT_MOVE_FIX_COUNT       = 2
     }
 
     private lateinit var fusedClient: FusedLocationProviderClient
@@ -37,6 +41,16 @@ class LocationForegroundService : Service() {
     private var accuracyThresholdM = DEFAULT_ACCURACY_THRESHOLD_M
     private var snapshotIntervalMs = DEFAULT_SNAPSHOT_INTERVAL_MS
     private var minDistanceM       = DEFAULT_MIN_DISTANCE_M
+    private var stillIntervalMs    = DEFAULT_STILL_INTERVAL_MS
+    private var stillSpeedKmh      = DEFAULT_STILL_SPEED_KMH
+    private var stillFixCount      = DEFAULT_STILL_FIX_COUNT
+    private var moveFixCount       = DEFAULT_MOVE_FIX_COUNT
+
+    // Adaptive State
+    private var isLowPowerMode     = false
+    private var stillStreak        = 0
+    private var movingStreak       = 0
+    private var lastAdaptiveLoc: Location? = null
 
     // Minute buffer
     private val minutePoints   = mutableListOf<Location>()
@@ -75,6 +89,15 @@ class LocationForegroundService : Service() {
         accuracyThresholdM = prefs.getFloat("accuracyThresholdM", DEFAULT_ACCURACY_THRESHOLD_M)
         snapshotIntervalMs = prefs.getLong("snapshotIntervalMs", DEFAULT_SNAPSHOT_INTERVAL_MS)
         minDistanceM       = prefs.getFloat("minDistanceM",       DEFAULT_MIN_DISTANCE_M)
+        stillIntervalMs    = prefs.getLong("stillIntervalMs",     DEFAULT_STILL_INTERVAL_MS)
+        stillSpeedKmh      = prefs.getFloat("stillSpeedKmh",      DEFAULT_STILL_SPEED_KMH)
+        stillFixCount      = prefs.getInt("stillFixCount",        DEFAULT_STILL_FIX_COUNT).coerceAtLeast(1)
+        moveFixCount       = prefs.getInt("moveFixCount",         DEFAULT_MOVE_FIX_COUNT).coerceAtLeast(1)
+
+        isLowPowerMode = false
+        stillStreak = 0
+        movingStreak = 0
+        lastAdaptiveLoc = null
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -85,7 +108,7 @@ class LocationForegroundService : Service() {
         } else {
             startForeground(NOTIF_ID, buildNotification())
         }
-        startLocationUpdates()
+        startLocationUpdates(highAccuracy = true)
         handler.postDelayed(minuteTick, snapshotIntervalMs)
         return START_STICKY
     }
@@ -113,6 +136,7 @@ class LocationForegroundService : Service() {
                 }
 
                 emitCurrentLocation(loc)
+                evaluatePowerMode(loc)
 
                 // If we already have points in this minute's buffer, apply distance filter
                 if (minutePoints.isNotEmpty()) {
@@ -136,9 +160,13 @@ class LocationForegroundService : Service() {
         }
     }
 
-    private fun startLocationUpdates() {
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, gpsIntervalMs)
-            .setMinUpdateIntervalMillis(gpsIntervalMs)
+    private fun startLocationUpdates(highAccuracy: Boolean) {
+        val interval = if (highAccuracy) gpsIntervalMs else stillIntervalMs
+        val priority = if (highAccuracy) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY
+        isLowPowerMode = !highAccuracy
+
+        val request = LocationRequest.Builder(priority, interval)
+            .setMinUpdateIntervalMillis(interval)
             .build()
 
         try {
@@ -160,6 +188,45 @@ class LocationForegroundService : Service() {
                 }
             }
         } catch (_: SecurityException) { /* permission not granted */ }
+    }
+
+    private fun evaluatePowerMode(loc: Location) {
+        if (loc.accuracy > accuracyThresholdM * 1.5f) {
+            lastAdaptiveLoc = loc
+            return
+        }
+
+        val previous = lastAdaptiveLoc
+        val speedKmh = if (loc.hasSpeed()) {
+            (loc.speed * 3.6f).coerceAtLeast(0f)
+        } else if (previous != null) {
+            val dtSec = ((loc.time - previous.time).coerceAtLeast(1L)).toFloat() / 1000f
+            val movedM = previous.distanceTo(loc)
+            ((movedM / dtSec) * 3.6f).coerceAtLeast(0f)
+        } else {
+            0f
+        }
+
+        val movedM = previous?.distanceTo(loc) ?: 0f
+        val isStillFix = speedKmh < stillSpeedKmh && movedM < minDistanceM
+
+        if (isStillFix) {
+            stillStreak += 1
+            movingStreak = 0
+            if (!isLowPowerMode && stillStreak >= stillFixCount) {
+                startLocationUpdates(highAccuracy = false)
+                stillStreak = 0
+            }
+        } else {
+            movingStreak += 1
+            stillStreak = 0
+            if (isLowPowerMode && movingStreak >= moveFixCount) {
+                startLocationUpdates(highAccuracy = true)
+                movingStreak = 0
+            }
+        }
+
+        lastAdaptiveLoc = loc
     }
 
     private fun emitCurrentLocation(loc: Location) {

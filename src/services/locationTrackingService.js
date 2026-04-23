@@ -9,6 +9,7 @@ import {
   subscribeToMinuteSnapshot,
   getPendingSnapshots,
   clearPendingSnapshots,
+  getLocalityFromLatLng,
 } from '../NativeModules/LocationTracker';
 
 const asString = value =>
@@ -105,6 +106,88 @@ export const stopUserLocationTracking = () => {
  */
 export const subscribeToUserLocation = callback => {
   return subscribeToLocation(callback);
+};
+
+/**
+ * Get current user location with address (geocoded from lat/lng).
+ * Returns { success, location: { latitude, longitude, address } }
+ * Similar to old Android app's geocoding process.
+ */
+let cachedLocation = null;
+let lastLocationTime = 0;
+const LOCATION_CACHE_MS = 5000; // Cache location for 5 seconds
+
+export const getUserCurrentLocation = async () => {
+  try {
+    // Return cached location if recent
+    const now = Date.now();
+    if (cachedLocation && now - lastLocationTime < LOCATION_CACHE_MS) {
+      return { success: true, location: cachedLocation };
+    }
+
+    // Subscribe briefly to get current location
+    const location = await new Promise((resolve, reject) => {
+      let timeoutId = null;
+      let unsubscribe = null;
+
+      const onLocation = loc => {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (unsubscribe) unsubscribe();
+        resolve(loc);
+      };
+
+      // Set timeout
+      timeoutId = setTimeout(() => {
+        if (unsubscribe) unsubscribe();
+        reject(new Error('Location timeout'));
+      }, 10000);
+
+      // Subscribe to get location
+      unsubscribe = subscribeToLocation(loc => {
+        if (loc?.latitude && loc?.longitude) {
+          onLocation(loc);
+        }
+      });
+    });
+
+    if (!location?.latitude || !location?.longitude) {
+      return { success: false, error: 'No location data' };
+    }
+
+    // Geocode address from lat/lng (like old app's Geocoder)
+    let address = 'Location not captured';
+    try {
+      const locality = await getLocalityFromLatLng(
+        location.latitude,
+        location.longitude,
+      );
+      if (locality && typeof locality === 'string' && locality.trim()) {
+        address = locality.trim();
+      }
+    } catch (geocodeError) {
+      console.log('[LocationService] Geocoding failed:', geocodeError?.message);
+    }
+
+    const result = {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      accuracy: location.accuracy ?? 0,
+      speed: location.speed ?? 0,
+      address,
+    };
+
+    // Cache the result
+    cachedLocation = result;
+    lastLocationTime = now;
+
+    return { success: true, location: result };
+  } catch (error) {
+    console.log(
+      '[LocationService] getUserCurrentLocation error:',
+      error?.message,
+    );
+    return { success: false, error: error?.message || error };
+  }
 };
 
 /**

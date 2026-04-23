@@ -23,6 +23,7 @@ import {
   clearLoginSession,
   loadLoginSession,
 } from '../services/sessionService';
+import { clearMediaCache } from '../services/mediaCacheService';
 import { useAppFeedback } from '../components/AppFeedback';
 import { useLocation } from '../context/LocationContext';
 
@@ -938,8 +939,7 @@ const DashboardScreen = ({ navigation }) => {
     };
   }, [tasks]);
 
-  useEffect(() => {
-  }, [tasks]);
+  useEffect(() => {}, [tasks]);
 
   useEffect(() => {
     let isActive = true;
@@ -1126,6 +1126,7 @@ const DashboardScreen = ({ navigation }) => {
           onPress: async () => {
             stopTracking();
             await clearLoginSession();
+            await clearMediaCache();
             navigation.replace('Login');
           },
         },
