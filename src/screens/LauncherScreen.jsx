@@ -65,6 +65,7 @@ const LauncherScreen = ({ navigation }) => {
 
     const runStartup = async () => {
       try {
+        console.log('[Launcher] startup check begin');
         const foundUpdate = await checkForUpdates(
           {
             onUpdateFound: (
@@ -109,6 +110,7 @@ const LauncherScreen = ({ navigation }) => {
               hideUpdateModal();
             },
             onError: error => {
+              console.log('[Launcher] OTA check error', error);
               hideUpdateModal();
               navigateTimerRef.current = setTimeout(() => {
                 if (isActive) {
@@ -120,6 +122,8 @@ const LauncherScreen = ({ navigation }) => {
           null,
           { skipNativeExit: false },
         );
+
+        console.log('[Launcher] startup check result', { foundUpdate });
 
         if (!isActive || foundUpdate) {
           return;
@@ -137,6 +141,7 @@ const LauncherScreen = ({ navigation }) => {
           navigation.replace(session ? 'Dashboard' : 'Login');
         }, 2000);
       } catch (error) {
+        console.log('[Launcher] startup flow failed', error);
         navigateTimerRef.current = setTimeout(async () => {
           if (!isActive) return;
           let session = null;
@@ -220,7 +225,7 @@ const LauncherScreen = ({ navigation }) => {
       drift2.stopAnimation();
       fade.stopAnimation();
     };
-  }, [hideUpdateModal, navigation, stopTracking]);
+  }, [fade, hideUpdateModal, navigation, pulse, drift1, drift2, stopTracking]);
 
   const drift1Y = drift1.interpolate({
     inputRange: [0, 1],
