@@ -15,6 +15,8 @@ import {
 const asString = value =>
   value === null || value === undefined ? '' : String(value).trim();
 
+let lastSavedSnapshotSignature = '';
+
 const getDateParts = input => {
   const now = input ? new Date(input) : new Date();
   const year = String(now.getFullYear());
@@ -224,10 +226,25 @@ export const saveLocationSnapshot = async ({
 
     const dateRootPath = `IECData/IECLocationHistory/${empId}/${year}/${month}/${currentDate}`;
     const locationPath = `${dateRootPath}/${timeKey}`;
+    const normalizedPath = asString(pathString);
+    const normalizedDistance = Number(distanceInMeters ?? 0) || 0;
+    const snapshotSignature = `${empId}|${dateRootPath}|${normalizedPath}|${normalizedDistance}`;
+
+    if (
+      normalizedDistance === 0 &&
+      normalizedPath &&
+      snapshotSignature === lastSavedSnapshotSignature
+    ) {
+      console.log('[LocationService] Skipping duplicate stationary snapshot', {
+        locationPath,
+        pathString: normalizedPath,
+      });
+      return { success: true, skipped: true };
+    }
 
     await saveData(locationPath, {
-      'lat-lng': pathString,
-      'distance-in-meter': distanceInMeters ?? 0,
+      'lat-lng': normalizedPath,
+      'distance-in-meter': normalizedDistance,
     });
 
     const existingDateRoot = await getData(dateRootPath);
@@ -242,6 +259,7 @@ export const saveLocationSnapshot = async ({
       'last-update-time': timeKey,
     });
 
+    lastSavedSnapshotSignature = snapshotSignature;
     console.log('[LocationService] Snapshot saved:', locationPath);
     return { success: true };
   } catch (error) {
