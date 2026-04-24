@@ -79,17 +79,7 @@ const TaskDetailModal = ({ visible, onClose, onStart, task, viewOnly = false }) 
         
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backBtn}
-            onPress={onClose}
-            activeOpacity={0.6}
-          >
-            <MaterialCommunityIcons
-              name="arrow-left"
-              size={24}
-              color={appTheme.colors.neutral.text}
-            />
-          </TouchableOpacity>
+         
           <Text style={styles.headerTitle}>Task Detail</Text>
           <View style={styles.headerRight} />
         </View>

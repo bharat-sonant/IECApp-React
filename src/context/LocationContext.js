@@ -82,10 +82,7 @@ export const LocationProvider = ({ children }) => {
         moveFixCount: 2         // Wait 2 fixes before restoring
       });
 
-      // Request battery optimization exemption (non-blocking)
-      requestIgnoreBatteryOptimizations().catch(() => {});
-
-      // NOW start native tracking - listeners are already listening
+      // start native tracking - listeners are already listening
       startLocationTracking();
       console.log('[LocationService] Tracking started for employee:', empId);
 
@@ -136,6 +133,7 @@ export const LocationProvider = ({ children }) => {
         startTracking,
         stopTracking,
         isIgnoringBatteryOptimizations,
+        requestIgnoreBatteryOptimizations,
       }}
     >
       {children}

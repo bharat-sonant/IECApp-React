@@ -84,27 +84,64 @@ class LocationModule(private val reactContext: ReactApplicationContext)
     @ReactMethod
     fun requestIgnoreBatteryOptimizations(promise: Promise) {
         try {
-            val context = reactContext.applicationContext
-            val pm = context.getSystemService(android.os.PowerManager::class.java)
-            val packageName = context.packageName
-
-            if (pm?.isIgnoringBatteryOptimizations(packageName) == true) {
-                promise.resolve(true)
-                return
-            }
+            val packageName = reactContext.packageName
+            val activity = reactContext.currentActivity
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                // 1. Try ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (Shows "Allow?" Dialog)
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    if (activity != null) {
+                        activity.startActivity(intent)
+                    } else {
+                        reactContext.startActivity(intent)
+                    }
+                    promise.resolve(true)
+                    return
+                } catch (e: Exception) {
+                    // 2. Fallback to App Info page (User can click "Battery" -> "No Restriction")
+                    try {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.parse("package:$packageName")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        if (activity != null) {
+                            activity.startActivity(intent)
+                        } else {
+                            reactContext.startActivity(intent)
+                        }
+                        promise.resolve(true)
+                        return
+                    } catch (e2: Exception) {
+                        // 3. Try Optimization List
+                        try {
+                            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            reactContext.startActivity(intent)
+                            promise.resolve(true)
+                            return
+                        } catch (e3: Exception) {
+                            // Final fallback to general settings
+                            try {
+                                val intent = Intent(Settings.ACTION_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                reactContext.startActivity(intent)
+                                promise.resolve(true)
+                            } catch (e4: Exception) {
+                                promise.resolve(false)
+                            }
+                        }
+                    }
                 }
-                reactContext.startActivity(intent)
-                promise.resolve(true)
-                return
+            } else {
+                promise.resolve(false)
             }
-
-            promise.resolve(false)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             promise.resolve(false)
         }
     }

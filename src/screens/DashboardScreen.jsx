@@ -1014,7 +1014,12 @@ const STATUS_META = {
 
 const DashboardScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const { stopTracking, startTracking, isIgnoringBatteryOptimizations } = useLocation();
+  const {
+    stopTracking,
+    startTracking,
+    isIgnoringBatteryOptimizations,
+    requestIgnoreBatteryOptimizations,
+  } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuSlideAnim = React.useRef(new Animated.Value(Dimensions.get('window').width)).current;
 
@@ -1327,66 +1332,79 @@ const DashboardScreen = ({ navigation }) => {
     };
   }, [loginId, tasksReloadToken]);
 
-  // Handle location tracking start conditionally
+  // Handle location tracking start
   useEffect(() => {
-    if (loginId && trackingPermissionGranted) {
-      console.log('[Dashboard] starting location tracking (permission confirmed)');
+    if (loginId) {
+      console.log('[Dashboard] starting location tracking');
       startTracking();
     }
-  }, [loginId, trackingPermissionGranted, startTracking]);
+  }, [loginId, startTracking]);
 
-  const checkAndShowBatteryPrompt = React.useCallback(async () => {
-    if (!loginId || tasksLoading || tasks.length === 0) return;
+  const batteryPromptCheckedRef = React.useRef(false);
+  const isCheckingBatteryRef = React.useRef(false);
+
+  const checkAndShowBatteryPrompt = React.useCallback(async (isReturnFromBackground = false) => {
+    // 1. Quick exit if already handled in this session or currently checking
+    if (!loginId || tasksLoading || isCheckingBatteryRef.current || batteryPromptCheckedRef.current) return;
 
     try {
-      // 1. Check actual system status first
-      const isExempt = await isIgnoringBatteryOptimizations();
-      if (isExempt) {
-        setBatteryPromptChecked(true);
-        setTrackingPermissionGranted(true);
-        return;
-      }
+      isCheckingBatteryRef.current = true;
 
-      // 2. If not exempt, check if we already showed the prompt
-      if (batteryPromptChecked || backgroundPermissionPromptShownRef.current) return;
-
+      // 2. Check persistent storage first (if they ever allowed it)
       const handled = await AsyncStorage.getItem(`battery_prompt_handled_${loginId}`);
       if (handled === 'true') {
+        batteryPromptCheckedRef.current = true;
         setBatteryPromptChecked(true);
-        // Still not exempt, so don't setTrackingPermissionGranted
+        
+        // Even if handled, we still want to ensure tracking starts if exempt
+        const isExempt = await isIgnoringBatteryOptimizations();
+        if (isExempt) {
+          setTrackingPermissionGranted(true);
+          startTracking();
+        }
         return;
       }
 
+      // 3. Small delay if returning from background
+      if (isReturnFromBackground) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // 4. Check actual system status
+      const isExempt = await isIgnoringBatteryOptimizations();
+      if (isExempt) {
+        console.log('[Dashboard] battery exemption confirmed, starting tracking');
+        batteryPromptCheckedRef.current = true;
+        setBatteryPromptChecked(true);
+        setTrackingPermissionGranted(true);
+        startTracking();
+        return;
+      }
+
+      // 5. Final check before showing alert
+      if (backgroundPermissionPromptShownRef.current) return;
+
       backgroundPermissionPromptShownRef.current = true;
+      batteryPromptCheckedRef.current = true;
+      setBatteryPromptChecked(true);
+
       console.log('[Dashboard] auto background permission popup requested');
       showAlert({
         title: 'Keep Tracking Active',
         message:
-          'Location is already enabled. Please set battery to No Restriction to keep tracking active.',
+          'Location tracking is active. To ensure it works in the background, please set battery to "No Restriction" or "Unrestricted".',
         variant: 'warning',
         dismissible: false,
         buttons: [
-          {
-            text: 'Not Now',
-            style: 'cancel',
-            onPress: () => {
-              setBatteryPromptChecked(true);
-              AsyncStorage.setItem(`battery_prompt_handled_${loginId}`, 'true').catch(() => {});
-            },
-          },
           {
             text: 'Allow No Restriction',
             onPress: async () => {
               try {
                 console.log('[Dashboard] auto battery setting permission confirmed');
                 await AsyncStorage.setItem(`battery_prompt_handled_${loginId}`, 'true');
-                setBatteryPromptChecked(true);
                 await requestIgnoreBatteryOptimizations();
-                // After returning from settings, the AppState listener will re-check
               } catch (error) {
-                console.log('[Dashboard] auto battery setting permission failed', {
-                  message: error?.message || '(no message)',
-                });
+                console.log('[Dashboard] auto battery setting permission failed', error);
               }
             },
           },
@@ -1394,19 +1412,21 @@ const DashboardScreen = ({ navigation }) => {
       });
     } catch (e) {
       console.log('[Dashboard] battery prompt check error', e);
+    } finally {
+      isCheckingBatteryRef.current = false;
     }
-  }, [loginId, tasksLoading, tasks.length, batteryPromptChecked, isIgnoringBatteryOptimizations, showAlert]);
+  }, [loginId, tasksLoading, isIgnoringBatteryOptimizations, startTracking, showAlert]);
 
   useEffect(() => {
     checkAndShowBatteryPrompt();
-  }, [checkAndShowBatteryPrompt]);
+  }, [loginId, tasksLoading]); // Only run when loginId or loading state changes
 
   // Re-check when app returns to foreground
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
         console.log('[Dashboard] app active - re-checking battery permission');
-        checkAndShowBatteryPrompt();
+        checkAndShowBatteryPrompt(true);
       }
     });
     return () => subscription.remove();

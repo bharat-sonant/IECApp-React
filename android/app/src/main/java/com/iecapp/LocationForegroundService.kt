@@ -22,11 +22,11 @@ class LocationForegroundService : Service() {
         private const val NOTIF_ID   = 2001
 
         // Defaults
-        private const val DEFAULT_GPS_INTERVAL_MS      = 10_000L
-        private const val DEFAULT_ACCURACY_THRESHOLD_M = 50f
+        private const val DEFAULT_GPS_INTERVAL_MS      = 5_000L
+        private const val DEFAULT_ACCURACY_THRESHOLD_M = 100f
         private const val DEFAULT_SNAPSHOT_INTERVAL_MS = 60_000L
         private const val DEFAULT_MIN_DISTANCE_M       = 10f
-        private const val DEFAULT_STILL_INTERVAL_MS    = 30_000L
+        private const val DEFAULT_STILL_INTERVAL_MS    = 10_000L
         private const val DEFAULT_STILL_SPEED_KMH      = 3.0f
         private const val DEFAULT_STILL_FIX_COUNT      = 3
         private const val DEFAULT_MOVE_FIX_COUNT       = 2
