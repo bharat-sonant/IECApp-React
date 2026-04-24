@@ -15,6 +15,7 @@ import {
   subscribeToUserLocation,
   subscribeToTravelSnapshots,
   flushPendingLocationSnapshots,
+  isIgnoringBatteryOptimizations,
   saveLocationSnapshot,
   getSessionEmpId,
 } from '../services/locationTrackingService';
@@ -34,11 +35,14 @@ export const LocationProvider = ({ children }) => {
   const [currentLocation, setCurrentLocation] = useState(null); // { latitude, longitude, accuracy, speed }
   const [error, setError] = useState(null);
   const isStartingRef = useRef(false);
+  const isTrackingRef = useRef(false);
   const stopTrackingRef = useRef(null);
 
   // Start tracking (call after login)
   const startTracking = useCallback(async () => {
-    if (isTracking) return;
+    if (isStartingRef.current || isTrackingRef.current) return true;
+    isStartingRef.current = true;
+    isTrackingRef.current = true;
     setIsTracking(true);
     try {
       const session = await loadLoginSession();
@@ -92,12 +96,15 @@ export const LocationProvider = ({ children }) => {
       };
 
       return true;
-    } catch (error) {
+    } catch (err) {
       setIsTracking(false);
-      setError(error?.message || error);
+      isTrackingRef.current = false;
+      setError(err?.message || err);
       return false;
+    } finally {
+      isStartingRef.current = false;
     }
-  }, [isTracking]);
+  }, []);
 
   // Stop tracking (call on logout)
   const stopTracking = useCallback(() => {
@@ -107,6 +114,8 @@ export const LocationProvider = ({ children }) => {
     } else {
       stopLocationTracking();
     }
+    isStartingRef.current = false;
+    isTrackingRef.current = false;
     setIsTracking(false);
     setCurrentLocation(null);
   }, []);
@@ -126,6 +135,7 @@ export const LocationProvider = ({ children }) => {
         error,
         startTracking,
         stopTracking,
+        isIgnoringBatteryOptimizations,
       }}
     >
       {children}

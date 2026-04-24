@@ -18,6 +18,9 @@ import {
   Platform,
   Image,
   StatusBar,
+  Animated,
+  Dimensions,
+  Pressable
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -26,6 +29,7 @@ import {
   Video as VideoCompressor,
   createVideoThumbnail,
 } from 'react-native-compressor';
+import TaskDetailModal from './TaskDetailModal';
 import RNFS from 'react-native-fs';
 import appTheme from '../theme/appTheme';
 import ReusableCamera from './ReusableCamera';
@@ -144,6 +148,36 @@ const TaskActionModal = ({
   const [isCameraVisible, setIsCameraVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
   const [isCompressing, setIsCompressing] = useState(false);
+  const [infoModalVisible, setInfoModalVisible] = useState(false);
+
+  const slideAnim = useRef(new Animated.Value(Dimensions.get('window').width)).current;
+  const infoSlideAnim = useRef(new Animated.Value(Dimensions.get('window').width)).current;
+
+  useEffect(() => {
+    if (visible) {
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        tension: 65,
+        friction: 11,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      slideAnim.setValue(Dimensions.get('window').width);
+    }
+  }, [visible, slideAnim]);
+
+  useEffect(() => {
+    if (infoModalVisible) {
+      Animated.spring(infoSlideAnim, {
+        toValue: 0,
+        tension: 65,
+        friction: 11,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      infoSlideAnim.setValue(Dimensions.get('window').width);
+    }
+  }, [infoModalVisible, infoSlideAnim]);
 
   useEffect(() => {
     if (visible) {
@@ -207,15 +241,15 @@ const TaskActionModal = ({
         }
 
         const title = String(
-          item.title ??
-            item.name ??
-            item.taskName ??
-            item.TaskName ??
-            item.label ??
+          item.title ||
+            item.name ||
+            item.taskName ||
+            item.TaskName ||
+            item.label ||
             '',
         ).trim();
         const id = String(
-          item.id ?? item.key ?? item.taskId ?? item.TaskId ?? index,
+          item.id || item.key || item.taskId || item.TaskId || index,
         ).trim();
 
         if (!title) {
@@ -226,19 +260,29 @@ const TaskActionModal = ({
           id: id || `${index}`,
           title,
           priority: String(
-            item.priority ?? item.taskPriority ?? item.TaskPriority ?? '',
+            item.priority || item.taskPriority || item.TaskPriority || '',
           ).trim(),
           description: String(
-            item.description ??
-              item.desc ??
-              item.taskDesc ??
-              item.TaskDesc ??
+            item.description ||
+              item.Description ||
+              item.desc ||
+              item.Desc ||
+              item.details ||
+              item.Details ||
+              item.remarks ||
+              item.Remarks ||
+              item.remark ||
+              item.Remark ||
+              item.taskDesc ||
+              item.TaskDesc ||
+              item.TaskDetails ||
               '',
           ).trim(),
           type: String(
-            item.type ?? item.taskType ?? item.TaskType ?? '',
+            item.type || item.taskType || item.TaskType || '',
           ).trim(),
           originalPath: item.originalPath || null,
+          raw: item.raw || item,
         };
       })
       .filter(Boolean);
@@ -252,15 +296,15 @@ const TaskActionModal = ({
         }
 
         const title = String(
-          item.title ??
-            item.name ??
-            item.taskName ??
-            item.TaskName ??
-            item.label ??
+          item.title ||
+            item.name ||
+            item.taskName ||
+            item.TaskName ||
+            item.label ||
             '',
         ).trim();
         const id = String(
-          item.id ?? item.key ?? item.taskId ?? item.TaskId ?? index,
+          item.id || item.key || item.taskId || item.TaskId || index,
         ).trim();
 
         if (!title) {
@@ -271,20 +315,29 @@ const TaskActionModal = ({
           id: id || `${index}`,
           title,
           description: String(
-            item.description ??
-              item.desc ??
-              item.taskDesc ??
-              item.TaskDesc ??
-              item.details ??
+            item.description ||
+              item.Description ||
+              item.desc ||
+              item.Desc ||
+              item.details ||
+              item.Details ||
+              item.remarks ||
+              item.Remarks ||
+              item.remark ||
+              item.Remark ||
+              item.taskDesc ||
+              item.TaskDesc ||
+              item.TaskDetails ||
               '',
           ).trim(),
           type: String(
-            item.type ?? item.taskType ?? item.TaskType ?? '',
+            item.type || item.taskType || item.TaskType || '',
           ).trim(),
           priority: String(
-            item.priority ?? item.taskPriority ?? item.TaskPriority ?? '',
+            item.priority || item.taskPriority || item.TaskPriority || '',
           ).trim(),
           originalPath: item.originalPath || null,
+          raw: item.raw || item,
         };
       })
       .filter(Boolean);
@@ -305,7 +358,7 @@ const TaskActionModal = ({
 
     const pushUnique = (list, item) => {
       const title = String(
-        item?.title ?? item?.name ?? item?.taskName ?? item?.TaskName ?? '',
+        item?.title || item?.name || item?.taskName || item?.TaskName || '',
       ).trim();
       if (!title) {
         return list;
@@ -319,10 +372,19 @@ const TaskActionModal = ({
           title,
           id: String(item?.id ?? item?.key ?? item?.taskId ?? title),
           description: String(
-            item?.description ??
-              item?.desc ??
-              item?.taskDesc ??
-              item?.TaskDesc ??
+            item?.remark ||
+              item?.Remark ||
+              item?.remarks ||
+              item?.Remarks ||
+              item?.desc ||
+              item?.Desc ||
+              item?.description ||
+              item?.Description ||
+              item?.details ||
+              item?.Details ||
+              item?.taskDesc ||
+              item?.TaskDesc ||
+              item?.TaskDetails ||
               '',
           ).trim(),
           type: String(
@@ -331,6 +393,7 @@ const TaskActionModal = ({
           priority: String(
             item?.priority ?? item?.taskPriority ?? item?.TaskPriority ?? '',
           ).trim(),
+          raw: item,
         });
       }
 
@@ -418,21 +481,16 @@ const TaskActionModal = ({
             if (taskValue && typeof taskValue === 'object') {
               const compositeId = `${groupKey}/${taskKey}`;
               pushUnique(choices, {
+                ...taskValue,
                 title: String(
-                  taskValue.task ??
-                    taskValue.name ??
-                    taskValue.title ??
-                    taskValue.desc ??
-                    taskValue.description ??
+                  taskValue.task ||
+                    taskValue.name ||
+                    taskValue.title ||
+                    taskValue.desc ||
+                    taskValue.description ||
                     '',
                 ).trim(),
-                id: taskValue.id ?? taskValue.key ?? compositeId,
-                description: String(
-                  taskValue.desc ??
-                    taskValue.description ??
-                    taskValue.TaskDesc ??
-                    '',
-                ).trim(),
+                id: taskValue.id || taskValue.key || compositeId,
                 type: 'Priority',
                 priority: 'high',
                 originalPath: `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}/${groupKey}/${taskKey}`,
@@ -466,19 +524,17 @@ const TaskActionModal = ({
             }
 
             const title = String(
-              value.name ??
-                value.title ??
-                value.taskName ??
-                value.TaskName ??
+              value.name ||
+                value.title ||
+                value.taskName ||
+                value.TaskName ||
                 '',
             ).trim();
             if (title) {
               pushUnique(choices, {
+                ...value,
                 title,
-                id: value.id ?? value.key ?? key,
-                description: String(
-                  value.desc ?? value.description ?? value.TaskDesc ?? '',
-                ).trim(),
+                id: value.id || value.key || key,
                 type:
                   String(
                     value.type ?? value.taskType ?? value.TaskType ?? 'Other',
@@ -604,7 +660,7 @@ const TaskActionModal = ({
     };
   }, [visible, mode, buildTaskChoices]);
 
-  const handleSelectTask = item => {
+  const handleSelectTask = async item => {
     if (item.title === 'Select task') {
       setSelectedTaskParam(null);
       setSelectedTaskMeta(null);
@@ -623,6 +679,47 @@ const TaskActionModal = ({
       delete nextErrors.selectedTask;
       return nextErrors;
     });
+
+    // If description is missing, try to fetch it from the main tasks catalog
+    if (!item.description && item.id) {
+      try {
+        const details = await getData(`IECData/Tasks/${item.id}`);
+        if (details) {
+          const freshDesc = String(
+            details.remark ||
+              details.Remark ||
+              details.remarks ||
+              details.Remarks ||
+              details.desc ||
+              details.Desc ||
+              details.description ||
+              details.Description ||
+              details.details ||
+              details.Details ||
+              details.taskDesc ||
+              details.TaskDesc ||
+              details.TaskDetails ||
+              '',
+          ).trim();
+
+          if (freshDesc) {
+            setSelectedTaskMeta(prev => {
+              // Ensure we only update if the ID still matches
+              if (prev?.id === item.id) {
+                return {
+                  ...prev,
+                  description: freshDesc,
+                  raw: { ...(prev?.raw || {}), ...details },
+                };
+              }
+              return prev;
+            });
+          }
+        }
+      } catch (e) {
+        console.log('[TaskActionModal] Detail fetch failed', e);
+      }
+    }
   };
 
   const handleSave = async () => {
@@ -657,6 +754,24 @@ const TaskActionModal = ({
     }
 
     setIsSaving(true);
+    let capturedLocation = {
+      latitude: 0,
+      longitude: 0,
+      address: 'Location not captured',
+    };
+
+    try {
+      const locResult = await require('../services/locationTrackingService').getUserCurrentLocation();
+      if (locResult.success && locResult.location) {
+        capturedLocation = {
+          latitude: locResult.location.latitude || 0,
+          longitude: locResult.location.longitude || 0,
+          address: locResult.location.address || 'Location captured',
+        };
+      }
+    } catch (e) {
+      console.log('[TaskActionModal] location capture failed', e);
+    }
 
     try {
       const resolvedTask = selectedTaskMeta ||
@@ -681,11 +796,7 @@ const TaskActionModal = ({
         remark: remark.trim(),
         images,
         videos,
-        location: {
-          latitude: 0,
-          longitude: 0,
-          address: 'Location not captured',
-        },
+        location: capturedLocation,
       });
 
       setFieldErrors({});
@@ -784,95 +895,92 @@ const TaskActionModal = ({
         onClose={() => setIsCameraVisible(false)}
         onPictureTaken={onPictureTaken}
       />
-      <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-        <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-          <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
+      <Modal
+        visible={visible}
+        animationType="none"
+        transparent={true}
+        onRequestClose={onClose}
+      >
+        <Animated.View
+          style={{
+            flex: 1,
+            backgroundColor: '#FFF',
+            transform: [{ translateX: slideAnim }],
+          }}
+        >
+          <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+            <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
 
-          <View style={styles.header}>
-            <TouchableOpacity
-              style={styles.backBtn}
-              onPress={onClose}
-              activeOpacity={0.6}
-            >
-              <MaterialCommunityIcons
-                name="arrow-left"
-                size={24}
-                color={appTheme.colors.neutral.text}
-              />
-            </TouchableOpacity>
-            <View style={styles.headerTitleWrap}>
-              <Text style={styles.headerTitle}>{getPageTitle()}</Text>
-              <Text style={styles.headerSubtitle}>
-                Please fill the required details below
-              </Text>
-            </View>
-          </View>
-
-          <KeyboardAvoidingView
-            style={{ flex: 1 }}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          >
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.scrollContent}
-            >
-              <View
-                style={[
-                  styles.inputGroup,
-                  {
-                    zIndex: 100,
-                    ...(Platform.OS === 'android'
-                      ? { elevation: dropdownOpen ? 10 : 0 }
-                      : {}),
-                  },
-                ]}
+            <View style={styles.header}>
+              <TouchableOpacity
+                style={styles.backBtn}
+                onPress={onClose}
+                activeOpacity={0.6}
               >
-                <Text style={styles.label}>
-                  Task <Text style={styles.reqStar}>*</Text>
+                <MaterialCommunityIcons
+                  name="arrow-left"
+                  size={24}
+                  color={appTheme.colors.neutral.text}
+                />
+              </TouchableOpacity>
+              <View style={styles.headerTitleWrap}>
+                <Text style={styles.headerTitle}>{getPageTitle()}</Text>
+                <Text style={styles.headerSubtitle}>
+                  Please fill the required details below
                 </Text>
-                {mode !== 'pick_task' && (
-                  <Text style={styles.dropdownHint}>
-                    Tap the field to open the dropdown
-                  </Text>
-                )}
-                {mode === 'pick_task' ? (
-                  <View
-                    style={[
-                      styles.pickerSelector,
-                      styles.pickerSelectorLocked,
-                      fieldErrors.selectedTask ? styles.inputError : null,
-                    ]}
-                  >
-                    <View style={styles.pickerContent}>
-                      <MaterialCommunityIcons
-                        name="clipboard-check-outline"
-                        size={20}
-                        color={appTheme.colors.brand.primary}
-                        style={styles.pickerIcon}
-                      />
-                      <View style={styles.pickerTextWrap}>
-                        <Text style={styles.pickerText}>
-                          {selectedTaskParam || 'Selected task'}
-                        </Text>
-                      </View>
-                    </View>
-                    <MaterialCommunityIcons
-                      name="lock-outline"
-                      size={18}
-                      color={appTheme.colors.neutral.textMuted}
-                    />
+              </View>
+            </View>
+
+            <KeyboardAvoidingView
+              style={{ flex: 1 }}
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            >
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.scrollContent}
+              >
+                <View
+                  style={[
+                    styles.inputGroup,
+                    {
+                      zIndex: 100,
+                      ...(Platform.OS === 'android'
+                        ? { elevation: dropdownOpen ? 10 : 0 }
+                        : {}),
+                    },
+                  ]}
+                >
+                  <View style={styles.labelRow}>
+                    <Text style={styles.label}>
+                      Task <Text style={styles.reqStar}>*</Text>
+                    </Text>
+                    {selectedTaskParam && (
+                      <TouchableOpacity
+                        style={styles.labelInfoBtn}
+                        onPress={() => setInfoModalVisible(true)}
+                        activeOpacity={0.7}
+                      >
+                        <MaterialCommunityIcons
+                          name="information-outline"
+                          size={14}
+                          color={appTheme.colors.brand.primary}
+                        />
+                        <Text style={styles.labelInfoText}>View Details</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
-                ) : (
-                  <View style={styles.dropdownWrap}>
-                    <TouchableOpacity
+                  {mode !== 'pick_task' && (
+                    <Text style={styles.dropdownHint}>
+                      Tap the field to open the dropdown
+                    </Text>
+                  )}
+                  {mode === 'pick_task' ? (
+                    <View
                       style={[
                         styles.pickerSelector,
+                        styles.pickerSelectorLocked,
                         fieldErrors.selectedTask ? styles.inputError : null,
                       ]}
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        setDropdownOpen(prev => !prev);
-                      }}
                     >
                       <View style={styles.pickerContent}>
                         <MaterialCommunityIcons
@@ -882,345 +990,378 @@ const TaskActionModal = ({
                           style={styles.pickerIcon}
                         />
                         <View style={styles.pickerTextWrap}>
-                          <Text
-                            style={[
-                              styles.pickerText,
-                              !selectedTaskParam && styles.pickerPlaceholder,
-                            ]}
-                          >
-                            {selectedTaskParam
-                              ? selectedTaskParam
-                              : getDropdownPlaceholder()}
+                          <Text style={styles.pickerText}>
+                            {selectedTaskParam || 'Selected task'}
                           </Text>
                         </View>
                       </View>
                       <MaterialCommunityIcons
-                        name={dropdownOpen ? 'chevron-up' : 'chevron-down'}
-                        size={22}
+                        name="lock-outline"
+                        size={18}
                         color={appTheme.colors.neutral.textMuted}
                       />
-                    </TouchableOpacity>
-
-                    {dropdownOpen && (
-                      <View style={styles.dropdownPanel}>
-                        <ScrollView
-                          nestedScrollEnabled
-                          showsVerticalScrollIndicator={true}
-                          contentContainerStyle={styles.dropdownScrollContent}
-                        >
-                          {optionsLoading ? (
-                            <View style={styles.dropdownEmpty}>
-                              <Text style={styles.dropdownEmptyText}>
-                                Loading tasks...
-                              </Text>
-                            </View>
-                          ) : optionsError ? (
-                            <View style={styles.dropdownEmpty}>
-                              <Text style={styles.dropdownEmptyText}>
-                                {optionsError}
-                              </Text>
-                            </View>
-                          ) : normalizedTaskOptions.length ? (
-                            normalizedTaskOptions.map(item => {
-                              const isSelected =
-                                selectedTaskParam === item.title;
-                              return (
-                                <TouchableOpacity
-                                  key={item.id}
-                                  style={[
-                                    styles.dropdownItem,
-                                    isSelected
-                                      ? styles.dropdownItemActive
-                                      : null,
-                                  ]}
-                                  activeOpacity={0.75}
-                                  onPress={() => handleSelectTask(item)}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.dropdownItemTitle,
-                                      isSelected &&
-                                        styles.dropdownItemTitleActive,
-                                    ]}
-                                  >
-                                    {item.title}
-                                  </Text>
-                                  {isSelected && (
-                                    <MaterialCommunityIcons
-                                      name="check-circle"
-                                      size={20}
-                                      color={appTheme.colors.brand.primary}
-                                    />
-                                  )}
-                                </TouchableOpacity>
-                              );
-                            })
-                          ) : (
-                            <View style={styles.dropdownEmpty}>
-                              <Text style={styles.dropdownEmptyText}>
-                                No tasks available
-                              </Text>
-                            </View>
-                          )}
-                        </ScrollView>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.rowGrid}>
-                <View style={[styles.inputGroup, { flex: 1, marginRight: 12 }]}>
-                  <Text style={styles.label}>
-                    Ward No. <Text style={styles.reqStar}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={[
-                      styles.input,
-                      fieldErrors.ward ? styles.inputError : null,
-                    ]}
-                    placeholder="Ex: 14A"
-                    placeholderTextColor="#94A3B8"
-                    value={ward}
-                    onChangeText={updateField(setWard, 'ward')}
-                    keyboardType="default"
-                  />
-                </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.label}>
-                    Participants <Text style={styles.reqStar}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={[
-                      styles.input,
-                      fieldErrors.participants ? styles.inputError : null,
-                    ]}
-                    placeholder="Total count"
-                    placeholderTextColor="#94A3B8"
-                    value={participants}
-                    onChangeText={updateField(setParticipants, 'participants')}
-                    keyboardType="numeric"
-                  />
-                </View>
-              </View>
-
-              <View style={styles.mediaSection}>
-                <View style={styles.mediaHeaderRow}>
-                  <View>
-                    <Text style={styles.mediaTitle}>Task Photos</Text>
-                    <Text style={styles.mediaSubtitle}>
-                      Take clear pictures of the work
-                    </Text>
-                  </View>
-                  <Text style={styles.mediaCount}>{images.length} / 5</Text>
-                </View>
-
-                <View style={styles.mediaGrid}>
-                  {images.length < 5 && (
-                    <TouchableOpacity
-                      style={[styles.previewCard, styles.uploadDashedBox]}
-                      activeOpacity={0.7}
-                      onPress={captureImage}
-                    >
-                      <MaterialCommunityIcons
-                        name="camera-plus"
-                        size={32}
-                        color={appTheme.colors.brand.primary}
-                      />
-                      <Text style={styles.uploadSmallText}>Add Photo</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  {images.map((imgUri, index) => (
-                    <TouchableOpacity
-                      key={index}
-                      style={styles.previewCard}
-                      activeOpacity={0.8}
-                      onPress={() => setPreviewImage(imgUri)}
-                    >
-                      <Image
-                        source={{ uri: imgUri }}
-                        style={styles.previewImg}
-                      />
-                      <TouchableOpacity
-                        style={styles.removeMediaBtn}
-                        onPress={() => {
-                          const newImgs = [...images];
-                          newImgs.splice(index, 1);
-                          setImages(newImgs);
-                        }}
-                      >
-                        <MaterialCommunityIcons
-                          name="close"
-                          size={14}
-                          color="#FFF"
-                        />
-                      </TouchableOpacity>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              <View style={styles.mediaSection}>
-                <View style={styles.mediaHeaderRow}>
-                  <View>
-                    <Text style={styles.mediaTitle}>
-                      Task Video{' '}
-                      <Text style={styles.optionalText}>(Optional)</Text>
-                    </Text>
-                    <Text style={styles.mediaSubtitle}>
-                      Keep it under 30 seconds
-                    </Text>
-                  </View>
-                  <Text style={styles.mediaCount}>{videos.length} / 2</Text>
-                </View>
-
-                <View style={styles.mediaGrid}>
-                  {isCompressing ? (
-                    <View style={[styles.previewCard, styles.compressingCard]}>
-                      <ActivityIndicator
-                        size="large"
-                        color={appTheme.colors.brand.primary}
-                      />
-                      <Text style={styles.compressingText}>Compressing...</Text>
                     </View>
                   ) : (
-                    videos.length < 2 && (
+                    <View style={styles.dropdownWrap}>
+                      <TouchableOpacity
+                        style={[
+                          styles.pickerSelector,
+                          fieldErrors.selectedTask ? styles.inputError : null,
+                        ]}
+                        activeOpacity={0.7}
+                        onPress={() => {
+                          setDropdownOpen(prev => !prev);
+                        }}
+                      >
+                        <View style={styles.pickerContent}>
+                          <MaterialCommunityIcons
+                            name="clipboard-check-outline"
+                            size={20}
+                            color={appTheme.colors.brand.primary}
+                            style={styles.pickerIcon}
+                          />
+                          <View style={styles.pickerTextWrap}>
+                            <Text
+                              style={[
+                                styles.pickerText,
+                                !selectedTaskParam && styles.pickerPlaceholder,
+                              ]}
+                            >
+                              {selectedTaskParam
+                                ? selectedTaskParam
+                                : getDropdownPlaceholder()}
+                            </Text>
+                          </View>
+
+                        </View>
+                        <MaterialCommunityIcons
+                          name={dropdownOpen ? 'chevron-up' : 'chevron-down'}
+                          size={22}
+                          color={appTheme.colors.neutral.textMuted}
+                        />
+                      </TouchableOpacity>
+
+                      {dropdownOpen && (
+                        <View style={styles.dropdownPanel}>
+                          <ScrollView
+                            nestedScrollEnabled
+                            showsVerticalScrollIndicator={true}
+                            contentContainerStyle={styles.dropdownScrollContent}
+                          >
+                            {optionsLoading ? (
+                              <View style={styles.dropdownEmpty}>
+                                <Text style={styles.dropdownEmptyText}>
+                                  Loading tasks...
+                                </Text>
+                              </View>
+                            ) : optionsError ? (
+                              <View style={styles.dropdownEmpty}>
+                                <Text style={styles.dropdownEmptyText}>
+                                  {optionsError}
+                                </Text>
+                              </View>
+                            ) : normalizedTaskOptions.length ? (
+                              normalizedTaskOptions.map(item => {
+                                const isSelected =
+                                  selectedTaskParam === item.title;
+                                return (
+                                  <TouchableOpacity
+                                    key={item.id}
+                                    style={[
+                                      styles.dropdownItem,
+                                      isSelected
+                                        ? styles.dropdownItemActive
+                                        : null,
+                                    ]}
+                                    activeOpacity={0.75}
+                                    onPress={() => handleSelectTask(item)}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.dropdownItemTitle,
+                                        isSelected &&
+                                          styles.dropdownItemTitleActive,
+                                      ]}
+                                    >
+                                      {item.title}
+                                    </Text>
+                                    {isSelected && (
+                                      <MaterialCommunityIcons
+                                        name="check-circle"
+                                        size={20}
+                                        color={appTheme.colors.brand.primary}
+                                      />
+                                    )}
+                                  </TouchableOpacity>
+                                );
+                              })
+                            ) : (
+                              <View style={styles.dropdownEmpty}>
+                                <Text style={styles.dropdownEmptyText}>
+                                  No tasks available
+                                </Text>
+                              </View>
+                            )}
+                          </ScrollView>
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.rowGrid}>
+                  <View style={[styles.inputGroup, { flex: 1, marginRight: 12 }]}>
+                    <Text style={styles.label}>
+                      Ward No. <Text style={styles.reqStar}>*</Text>
+                    </Text>
+                    <TextInput
+                      style={[
+                        styles.input,
+                        fieldErrors.ward ? styles.inputError : null,
+                      ]}
+                      placeholder="Ex: 14A"
+                      placeholderTextColor="#94A3B8"
+                      value={ward}
+                      onChangeText={updateField(setWard, 'ward')}
+                      keyboardType="default"
+                    />
+                  </View>
+                  <View style={[styles.inputGroup, { flex: 1 }]}>
+                    <Text style={styles.label}>
+                      Participants <Text style={styles.reqStar}>*</Text>
+                    </Text>
+                    <TextInput
+                      style={[
+                        styles.input,
+                        fieldErrors.participants ? styles.inputError : null,
+                      ]}
+                      placeholder="Total count"
+                      placeholderTextColor="#94A3B8"
+                      value={participants}
+                      onChangeText={updateField(setParticipants, 'participants')}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.mediaSection}>
+                  <View style={styles.mediaHeaderRow}>
+                    <View>
+                      <Text style={styles.mediaTitle}>Task Photos</Text>
+                      <Text style={styles.mediaSubtitle}>
+                        Take clear pictures of the work
+                      </Text>
+                    </View>
+                    <Text style={styles.mediaCount}>{images.length} / 5</Text>
+                  </View>
+
+                  <View style={styles.mediaGrid}>
+                    {images.length < 5 && (
                       <TouchableOpacity
                         style={[styles.previewCard, styles.uploadDashedBox]}
                         activeOpacity={0.7}
-                        onPress={captureVideo}
+                        onPress={captureImage}
                       >
                         <MaterialCommunityIcons
-                          name="video-plus"
+                          name="camera-plus"
                           size={32}
                           color={appTheme.colors.brand.primary}
                         />
-                        <Text style={styles.uploadSmallText}>Add Video</Text>
+                        <Text style={styles.uploadSmallText}>Add Photo</Text>
                       </TouchableOpacity>
-                    )
-                  )}
+                    )}
 
-                  {videos.map((videoItem, index) => (
-                    <View key={index} style={styles.previewCard}>
-                      {videoItem.thumbnailUri ? (
+                    {images.map((imgUri, index) => (
+                      <TouchableOpacity
+                        key={index}
+                        style={styles.previewCard}
+                        activeOpacity={0.8}
+                        onPress={() => setPreviewImage(imgUri)}
+                      >
                         <Image
-                          source={{ uri: videoItem.thumbnailUri }}
+                          source={{ uri: imgUri }}
                           style={styles.previewImg}
                         />
-                      ) : (
-                        <View style={styles.videoPlaceholder}>
+                        <TouchableOpacity
+                          style={styles.removeMediaBtn}
+                          onPress={() => {
+                            const newImgs = [...images];
+                            newImgs.splice(index, 1);
+                            setImages(newImgs);
+                          }}
+                        >
                           <MaterialCommunityIcons
-                            name="play-circle"
-                            size={38}
+                            name="close"
+                            size={14}
                             color="#FFF"
                           />
-                        </View>
-                      )}
-                      <TouchableOpacity
-                        style={styles.removeMediaBtn}
-                        onPress={() => {
-                          const newVids = [...videos];
-                          newVids.splice(index, 1);
-                          setVideos(newVids);
-                        }}
-                      >
-                        <MaterialCommunityIcons
-                          name="close"
-                          size={14}
-                          color="#FFF"
-                        />
+                        </TouchableOpacity>
                       </TouchableOpacity>
-                    </View>
-                  ))}
+                    ))}
+                  </View>
                 </View>
-              </View>
 
-              <View style={styles.divider} />
+                <View style={styles.mediaSection}>
+                  <View style={styles.mediaHeaderRow}>
+                    <View>
+                      <Text style={styles.mediaTitle}>
+                        Task Video{' '}
+                        <Text style={styles.optionalText}>(Optional)</Text>
+                      </Text>
+                      <Text style={styles.mediaSubtitle}>
+                        Keep it under 30 seconds
+                      </Text>
+                    </View>
+                    <Text style={styles.mediaCount}>{videos.length} / 2</Text>
+                  </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>
-                  Remarks / Description <Text style={styles.reqStar}>*</Text>
-                </Text>
-                <TextInput
-                  style={[
-                    styles.input,
-                    styles.textArea,
-                    fieldErrors.remark ? styles.inputError : null,
-                  ]}
-                  placeholder="Write observation details here..."
-                  placeholderTextColor="#94A3B8"
-                  multiline
-                  numberOfLines={4}
-                  value={remark}
-                  onChangeText={updateField(setRemark, 'remark')}
-                  textAlignVertical="top"
-                />
-              </View>
+                  <View style={styles.mediaGrid}>
+                    {isCompressing ? (
+                      <View style={[styles.previewCard, styles.compressingCard]}>
+                        <ActivityIndicator
+                          size="large"
+                          color={appTheme.colors.brand.primary}
+                        />
+                        <Text style={styles.compressingText}>Compressing...</Text>
+                      </View>
+                    ) : (
+                      videos.length < 2 && (
+                        <TouchableOpacity
+                          style={[styles.previewCard, styles.uploadDashedBox]}
+                          activeOpacity={0.7}
+                          onPress={captureVideo}
+                        >
+                          <MaterialCommunityIcons
+                            name="video-plus"
+                            size={32}
+                            color={appTheme.colors.brand.primary}
+                          />
+                          <Text style={styles.uploadSmallText}>Add Video</Text>
+                        </TouchableOpacity>
+                      )
+                    )}
 
-              <View style={{ height: 100 }} />
-            </ScrollView>
-          </KeyboardAvoidingView>
+                    {videos.map((videoItem, index) => (
+                      <View key={index} style={styles.previewCard}>
+                        {videoItem.thumbnailUri ? (
+                          <Image
+                            source={{ uri: videoItem.thumbnailUri }}
+                            style={styles.previewImg}
+                          />
+                        ) : (
+                          <View style={styles.videoPlaceholder}>
+                            <MaterialCommunityIcons
+                              name="play-circle"
+                              size={38}
+                              color="#FFF"
+                            />
+                          </View>
+                        )}
+                        <TouchableOpacity
+                          style={styles.removeMediaBtn}
+                          onPress={() => {
+                            const newVids = [...videos];
+                            newVids.splice(index, 1);
+                            setVideos(newVids);
+                          }}
+                        >
+                          <MaterialCommunityIcons
+                            name="close"
+                            size={14}
+                            color="#FFF"
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                </View>
 
-          {inlineToast ? (
-            <View pointerEvents="none" style={styles.inlineToastWrap}>
-              <View
-                style={[
-                  styles.inlineToast,
-                  {
-                    borderColor: inlineToastTheme.borderColor,
-                    backgroundColor: inlineToastTheme.surfaceBg,
-                  },
-                ]}
-              >
+                <View style={styles.divider} />
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>
+                    Remarks / Description <Text style={styles.reqStar}>*</Text>
+                  </Text>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      styles.textArea,
+                      fieldErrors.remark ? styles.inputError : null,
+                    ]}
+                    placeholder="Write observation details here..."
+                    placeholderTextColor="#94A3B8"
+                    multiline
+                    numberOfLines={4}
+                    value={remark}
+                    onChangeText={updateField(setRemark, 'remark')}
+                    textAlignVertical="top"
+                  />
+                </View>
+
+                <View style={{ height: 100 }} />
+              </ScrollView>
+            </KeyboardAvoidingView>
+
+            {inlineToast ? (
+              <View pointerEvents="none" style={styles.inlineToastWrap}>
                 <View
                   style={[
-                    styles.inlineToastAccent,
-                    { backgroundColor: inlineToastTheme.accentColor },
+                    styles.inlineToast,
+                    {
+                      borderColor: inlineToastTheme.borderColor,
+                      backgroundColor: inlineToastTheme.surfaceBg,
+                    },
                   ]}
-                />
-                <MaterialCommunityIcons
-                  name={inlineToastTheme.icon}
-                  size={18}
-                  color={inlineToastTheme.accentColor}
-                  style={styles.inlineToastIcon}
-                />
-                <View style={styles.inlineToastTextWrap}>
-                  <Text
+                >
+                  <View
                     style={[
-                      styles.inlineToastTitle,
-                      { color: inlineToastTheme.labelText },
+                      styles.inlineToastAccent,
+                      { backgroundColor: inlineToastTheme.accentColor },
                     ]}
-                  >
-                    {inlineToastTheme.label}
-                  </Text>
-                  <Text style={styles.inlineToastText} numberOfLines={2}>
-                    {inlineToast.message}
-                  </Text>
+                  />
+                  <MaterialCommunityIcons
+                    name={inlineToastTheme.icon}
+                    size={18}
+                    color={inlineToastTheme.accentColor}
+                    style={styles.inlineToastIcon}
+                  />
+                  <View style={styles.inlineToastTextWrap}>
+                    <Text
+                      style={[
+                        styles.inlineToastTitle,
+                        { color: inlineToastTheme.labelText },
+                      ]}
+                    >
+                      {inlineToastTheme.label}
+                    </Text>
+                    <Text style={styles.inlineToastText} numberOfLines={2}>
+                      {inlineToast.message}
+                    </Text>
+                  </View>
                 </View>
               </View>
-            </View>
-          ) : null}
+            ) : null}
 
-          <View style={styles.bottomBar}>
-            <TouchableOpacity
-              style={[styles.submitBtn, isSaving && styles.submitBtnDisabled]}
-              onPress={handleSave}
-              activeOpacity={0.85}
-              disabled={isSaving}
-            >
-              <Text style={styles.submitBtnText}>
-                {isSaving ? 'Saving...' : 'Submit Task'}
-              </Text>
-              <MaterialCommunityIcons
-                name="arrow-right"
-                size={20}
-                color="#FFF"
-                style={{ marginLeft: 8 }}
-              />
-            </TouchableOpacity>
-          </View>
-        </SafeAreaView>
+            <View style={styles.bottomBar}>
+              <TouchableOpacity
+                style={[styles.submitBtn, isSaving && styles.submitBtnDisabled]}
+                onPress={handleSave}
+                activeOpacity={0.85}
+                disabled={isSaving}
+              >
+                <Text style={styles.submitBtnText}>
+                  {isSaving ? 'Saving...' : 'Submit Task'}
+                </Text>
+                <MaterialCommunityIcons
+                  name="arrow-right"
+                  size={20}
+                  color="#FFF"
+                  style={{ marginLeft: 8 }}
+                />
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+        </Animated.View>
       </Modal>
 
       <Modal
@@ -1249,6 +1390,18 @@ const TaskActionModal = ({
           </SafeAreaView>
         </View>
       </Modal>
+
+      <TaskDetailModal
+        visible={infoModalVisible}
+        onClose={() => setInfoModalVisible(false)}
+        onStart={() => {}}
+        task={
+          selectedTaskMeta ||
+          pickTaskOptions.find(item => item.title === selectedTaskParam) ||
+          normalizedTaskOptions.find(item => item.title === selectedTaskParam)
+        }
+        viewOnly={true}
+      />
     </>
   );
 };
@@ -1306,13 +1459,32 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
   label: {
     fontSize: 13,
     fontWeight: '800',
     color: '#475569',
-    marginBottom: 8,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+  labelInfoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(18, 59, 74, 0.05)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  labelInfoText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: appTheme.colors.brand.primary,
   },
   reqStar: {
     color: '#EF4444',
@@ -1355,6 +1527,78 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+  },
+   taskInfoBtn: {
+     flexDirection: 'row',
+     paddingHorizontal: 10,
+     paddingVertical: 6,
+     marginLeft: 8,
+     backgroundColor: 'rgba(18, 59, 74, 0.08)',
+     borderRadius: 12,
+     alignItems: 'center',
+     justifyContent: 'center',
+     gap: 6,
+   },
+   taskInfoBtnText: {
+     fontSize: 12,
+     fontWeight: '800',
+     color: appTheme.colors.brand.primary,
+   },
+  infoModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  infoModalContent: {
+    width: '90%',
+    backgroundColor: '#FFF',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  infoModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 12,
+  },
+  infoModalTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: appTheme.colors.neutral.text,
+    flex: 1,
+  },
+  infoModalScroll: {
+    maxHeight: 320,
+  },
+  infoModalDesc: {
+    fontSize: 14,
+    color: appTheme.colors.neutral.textMuted,
+    lineHeight: 22,
+    fontWeight: '600',
+  },
+  infoModalCloseBtn: {
+    marginTop: 24,
+    backgroundColor: appTheme.colors.brand.primary,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: appTheme.colors.brand.primary,
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  infoModalCloseText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '800',
   },
   pickerIcon: {
     marginRight: 10,

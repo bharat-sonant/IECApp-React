@@ -10,6 +10,8 @@ import {
   ScrollView,
   TouchableOpacity,
   View,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import RNFS from 'react-native-fs';
 import { NativeModules } from 'react-native';
@@ -154,6 +156,41 @@ const MediaViewer = ({
   onClose,
 }) => {
   const insets = useSafeAreaInsets();
+  const slideAnim = React.useRef(new Animated.Value(Dimensions.get('window').width)).current;
+  const previewSlideAnim = React.useRef(new Animated.Value(Dimensions.get('window').width)).current;
+
+  React.useEffect(() => {
+    if (visible) {
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        tension: 65,
+        friction: 11,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      slideAnim.setValue(Dimensions.get('window').width);
+    }
+  }, [visible, slideAnim]);
+
+  React.useEffect(() => {
+    if (!!previewUri) {
+      Animated.spring(previewSlideAnim, {
+        toValue: 0,
+        tension: 65,
+        friction: 11,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      previewSlideAnim.setValue(Dimensions.get('window').width);
+    }
+  }, [previewUri, previewSlideAnim]);
+
+  console.log('[MediaViewer] render', {
+    visible,
+    imagesCount: images.length,
+    videosCount: videos.length,
+    taskId: taskMeta?.id || taskMeta?.taskId || '(empty)',
+  });
   const [previewUri, setPreviewUri] = useState('');
   const [downloadingUri, setDownloadingUri] = useState('');
   const [downloadingLatLngUri, setDownloadingLatLngUri] = useState('');
@@ -163,15 +200,25 @@ const MediaViewer = ({
   const latLng =
     typeof taskMeta?.latLng === 'string' ? taskMeta.latLng.trim() : '';
   const hasLatLng = !!latLng;
-  const toastTheme = toastState
-    ? toastStyles[toastState.variant] ?? toastStyles.info
-    : toastStyles.info;
+  const toastMessage = toastState?.message ?? '';
+  const toastVariant = toastState?.variant ?? 'info';
+  const toastTheme = toastStyles[toastVariant] ?? toastStyles.info;
+  const hasToast = Boolean(toastState && toastMessage);
 
   const showToast = (message, variant = 'info') => {
     if (toastTimerRef.current) {
       clearTimeout(toastTimerRef.current);
     }
-    setToastState({ message, variant });
+    if (typeof message !== 'string' || !message.trim()) {
+      console.log('[MediaViewer] toast skipped - empty message');
+      return;
+    }
+
+    console.log('[MediaViewer] toast show', {
+      variant,
+      message: message.trim(),
+    });
+    setToastState({ message: message.trim(), variant });
     toastTimerRef.current = setTimeout(() => {
       setToastState(null);
     }, 2600);
@@ -179,6 +226,7 @@ const MediaViewer = ({
 
   useEffect(() => {
     if (!visible) {
+      console.log('[MediaViewer] closed');
       setPreviewUri('');
       setDownloadingUri('');
       setDownloadingLatLngUri('');
@@ -238,11 +286,17 @@ const MediaViewer = ({
     [videos],
   );
 
+  const hasMediaItems = imageItems.length > 0 || videoItems.length > 0;
+
   useEffect(() => {
     let isMounted = true;
+    console.log('[MediaViewer] thumbnail build check', {
+      videoCount: videoItems.length,
+    });
 
     const buildThumbnails = async () => {
       const nextThumbs = {};
+      console.log('[MediaViewer] thumbnail build start');
 
       await Promise.all(
         videoItems.map(async item => {
@@ -259,6 +313,9 @@ const MediaViewer = ({
 
       if (isMounted) {
         setVideoThumbnails(nextThumbs);
+        console.log('[MediaViewer] thumbnail build complete', {
+          count: Object.keys(nextThumbs).length,
+        });
       }
     };
 
@@ -273,12 +330,23 @@ const MediaViewer = ({
     };
   }, [videoItems]);
 
+  if (!visible || !hasMediaItems) {
+    return null;
+  }
+
   const handleDownload = async (item, options = {}) => {
     if (!item?.uri) {
+      console.log('[MediaViewer] download skipped - missing uri');
       return;
     }
 
     const { withLatLng = false } = options;
+    console.log('[MediaViewer] download start', {
+      id: item?.id || '(empty)',
+      type: item?.type || '(empty)',
+      withLatLng,
+      fileName: item?.fileName || '(auto)',
+    });
 
     try {
       if (withLatLng) {
@@ -331,13 +399,20 @@ const MediaViewer = ({
         }).promise;
 
         if (result.statusCode === 200) {
+          console.log('[MediaViewer] download success', {
+            destination,
+            statusCode: result.statusCode,
+          });
           showToast(`${finalName} saved to Downloads`, 'success');
         } else {
           throw new Error(`Download failed with status ${result.statusCode}`);
         }
       }
     } catch (error) {
-      console.log('[MediaViewer] Download failed', error);
+      console.log('[MediaViewer] download failed', {
+        message: error?.message || '(no message)',
+        raw: error,
+      });
       showToast(error?.message || 'Download failed', 'error');
     } finally {
       if (withLatLng) {
@@ -345,6 +420,9 @@ const MediaViewer = ({
       } else {
         setDownloadingUri('');
       }
+      console.log('[MediaViewer] download end', {
+        withLatLng,
+      });
     }
   };
 
@@ -405,15 +483,22 @@ const MediaViewer = ({
   return (
     <Modal
       visible={visible}
-      animationType="slide"
-      transparent={false}
+      animationType="none"
+      transparent={true}
       statusBarTranslucent
       onRequestClose={onClose}
     >
-      <View style={styles.backdrop}>
+      <Animated.View
+        style={{
+          flex: 1,
+          backgroundColor: appTheme.colors.neutral.background,
+          transform: [{ translateX: slideAnim }],
+        }}
+      >
+        <View style={styles.backdrop}>
         <StatusBar
-          barStyle="light-content"
-          backgroundColor={appTheme.colors.brand.primaryDark}
+          barStyle="dark-content"
+          backgroundColor={appTheme.colors.neutral.background}
           translucent={false}
         />
         <SafeAreaView
@@ -436,12 +521,6 @@ const MediaViewer = ({
               </TouchableOpacity>
             </View>
 
-            <View style={styles.headerBar}>
-              <Text style={[styles.headerBarText, styles.headerBarMedia]}>
-                Media
-              </Text>
-              <Text style={styles.headerBarAction}>Actions</Text>
-            </View>
 
             <ScrollView
               contentContainerStyle={styles.content}
@@ -457,11 +536,16 @@ const MediaViewer = ({
         <Modal
           visible={!!previewUri}
           transparent
-          animationType="fade"
+          animationType="none"
           onRequestClose={() => setPreviewUri('')}
         >
           <View style={styles.previewBackdrop}>
-            <View style={styles.previewCard}>
+            <Animated.View
+              style={[
+                styles.previewCard,
+                { transform: [{ translateX: previewSlideAnim }] },
+              ]}
+            >
               <View style={styles.previewTopBar}>
                 <View style={styles.previewTitleBlock}>
                   <Text style={styles.previewEyebrow}>Image Preview</Text>
@@ -488,13 +572,13 @@ const MediaViewer = ({
                   />
                 ) : null}
               </View>
-            </View>
+            </Animated.View>
           </View>
         </Modal>
 
         <Modal
           transparent
-          visible={!!toastState}
+          visible={hasToast}
           animationType="fade"
           onRequestClose={() => setToastState(null)}
         >
@@ -533,7 +617,7 @@ const MediaViewer = ({
                 <View style={styles.toastTextWrap}>
                   <Text style={styles.toastTitle}>{toastTheme.label}</Text>
                   <Text style={styles.toastText} numberOfLines={2}>
-                    {toastState.message}
+                    {toastMessage}
                   </Text>
                 </View>
               </View>
@@ -541,6 +625,7 @@ const MediaViewer = ({
           </View>
         </Modal>
       </View>
+      </Animated.View>
     </Modal>
   );
 };
@@ -548,15 +633,15 @@ const MediaViewer = ({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: appTheme.colors.neutral.surface,
+    backgroundColor: appTheme.colors.neutral.background,
   },
   safeArea: {
     flex: 1,
-    backgroundColor: appTheme.colors.brand.primaryDark,
+    backgroundColor: appTheme.colors.neutral.background,
   },
   container: {
     flex: 1,
-    backgroundColor: appTheme.colors.neutral.surface,
+    backgroundColor: appTheme.colors.neutral.background,
   },
   headerShell: {
     flexDirection: 'row',
@@ -565,7 +650,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 12,
     paddingBottom: 12,
-    backgroundColor: appTheme.colors.brand.primaryDark,
+    backgroundColor: appTheme.colors.brand.primary,
   },
   closeButton: {
     width: 34,
@@ -580,13 +665,13 @@ const styles = StyleSheet.create({
     paddingRight: 12,
   },
   headerTitle: {
-    color: '#fff',
+    color: '#FFF',
     fontSize: 19,
     fontWeight: '800',
   },
   headerSubtitle: {
     marginTop: 5,
-    color: 'rgba(255,255,255,0.82)',
+    color: 'rgba(255,255,255,0.8)',
     fontSize: 12,
     fontWeight: '600',
   },

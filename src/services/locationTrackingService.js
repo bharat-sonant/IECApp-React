@@ -10,6 +10,7 @@ import {
   getPendingSnapshots,
   clearPendingSnapshots,
   getLocalityFromLatLng,
+  isIgnoringBatteryOptimizations as nativeIsIgnoringBatteryOptimizations,
 } from '../NativeModules/LocationTracker';
 
 const asString = value =>
@@ -312,4 +313,5 @@ export {
   nativeStartLocationTracking as startLocationTracking,
   nativeStopLocationTracking as stopLocationTracking,
   nativeRequestIgnoreBatteryOptimizations as requestIgnoreBatteryOptimizations,
+  nativeIsIgnoringBatteryOptimizations as isIgnoringBatteryOptimizations,
 };

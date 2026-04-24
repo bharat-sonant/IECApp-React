@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  InteractionManager,
   FlatList,
   Modal,
   Pressable,
@@ -9,16 +10,20 @@ import {
   Text,
   View,
   TouchableOpacity,
+  AppState,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import appTheme from '../theme/appTheme';
 import CommonLoader from '../components/CommonLoader';
-import TaskActionModal from '../components/TaskActionModal';
 import { getData } from '../firebase/firebaseService';
+import { FIREBASE_CONFIG } from '../firebase/firebaseConfig';
 import {
   clearLoginSession,
   loadLoginSession,
@@ -26,6 +31,12 @@ import {
 import { clearMediaCache } from '../services/mediaCacheService';
 import { useAppFeedback } from '../components/AppFeedback';
 import { useLocation } from '../context/LocationContext';
+import {
+  saveDashboardTaskCache,
+  readTaskCatalogCache,
+  saveTaskCatalogCache,
+  clearTaskCache,
+} from '../services/taskCacheService';
 
 const isPlainObject = value =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -194,6 +205,7 @@ const buildTaskType = (task, fallbackType) => {
   );
 };
 
+// resolveLeafTitle definition
 const resolveLeafTitle = task =>
   getFirstText(
     task?.task,
@@ -202,21 +214,47 @@ const resolveLeafTitle = task =>
     task?.TaskTitle,
     task?.name,
     task?.Name,
+  ) || buildTaskTitle(task);
+
+
+const resolveLeafDescription = task =>
+  getFirstText(
+    task?.remark,
+    task?.Remark,
+    task?.remarks,
+    task?.Remarks,
     task?.desc,
     task?.Desc,
     task?.description,
     task?.Description,
-    task?.remarks,
-    task?.Remarks,
-  ) || buildTaskTitle(task);
+    task?.details,
+    task?.Details,
+  );
 
-const resolveTaskCategory = task =>
-  getFirstText(
+const resolveTaskCategory = task => {
+  const raw = getFirstText(
     task?.taskCategory,
     task?.TaskCategory,
     task?.category,
     task?.Category,
+  ).toLowerCase();
+
+  if (!raw) return 'Other';
+  if (raw.includes('kpi')) return 'KPI';
+  if (raw.includes('priority')) return 'Priority';
+  return 'Other';
+};
+
+const extractUserId = taskData => {
+  if (!taskData) return '';
+  return getFirstText(
+    taskData?.userId,
+    taskData?.userID,
+    taskData?.createdBy,
+    taskData?.loginId,
+    taskData?.employeeId,
   );
+};
 
 const resolveTaskTag = task => {
   const category = resolveTaskCategory(task).toLowerCase();
@@ -576,6 +614,8 @@ const TASK_FIELD_KEYS = new Set([
   'wardNo',
   'video1',
   'video2',
+  'mediaKey',
+  'mediaCount',
 ]);
 
 const isTaskLeafNode = item => {
@@ -612,6 +652,50 @@ const buildTaskFromPrimitive = (
     resolvedWardNo: '',
     originalPath: rootPath && nextPath ? `${rootPath}/${nextPath}` : null,
   };
+};
+
+const buildStorageUrl = (
+  path,
+  type = 'media',
+  taskData = null,
+) => {
+  if (!path) return null;
+  if (path.startsWith('http')) return path;
+
+  // Construct full path from filename + task data
+  let fullPath = path;
+
+  if (!path.includes('IECData/') && taskData) {
+    const userId = getFirstText(taskData.userId, taskData.loginId);
+    const taskId = getFirstText(taskData.taskId, taskData.id);
+    const itemKey = getFirstText(taskData.mediaKey, taskData.mediaCount, '1');
+    const dateStr = getFirstText(taskData._at, taskData.date);
+
+    if (dateStr && userId && taskId) {
+      const parts = dateStr.split(' ')[0].split('-');
+      if (parts.length >= 3) {
+        const year = parts[0];
+        const monthNum = parseInt(parts[1], 10);
+        const monthNames = [
+          'January', 'February', 'March', 'April', 'May', 'June',
+          'July', 'August', 'September', 'October', 'November', 'December'
+        ];
+        const month = monthNames[monthNum - 1];
+        const day = parts[2];
+        const isoDate = `${year}-${parts[1]}-${day}`;
+
+        if (type === 'video') {
+          fullPath = `DevTest/IECData/IECTasksVideos/${userId}/${year}/${month}/${isoDate}/${taskId}/${itemKey}/${path}`;
+        } else {
+          fullPath = `DevTest/IECData/IECTasksImages/${userId}/${year}/${month}/${isoDate}/${taskId}/${itemKey}/${path}`;
+        }
+      }
+    }
+  }
+
+  const encodedPath = encodeURIComponent(fullPath);
+  const bucket = FIREBASE_CONFIG?.storageBucket || 'devtest-62768.firebasestorage.app';
+  return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
 };
 
 const flattenTaskNode = (
@@ -715,6 +799,24 @@ const flattenTaskNode = (
             item?.approvedAt,
           );
 
+          const mediaContext = {
+            userId: extractUserId(item) || '',
+            taskId: resolvedTaskId,
+            mediaKey: key,
+            date: taskDate,
+            _at: getFirstText(item?._at, taskDate),
+          };
+
+          const imageKeys = Object.keys(item).filter(name => /^image\d+$/i.test(name));
+          const videoKeys = Object.keys(item).filter(name => /^video\d+$/i.test(name));
+
+          const imageUrls = imageKeys
+            .map(k => buildStorageUrl(item[k], 'image', mediaContext))
+            .filter(Boolean);
+          const videoUrls = videoKeys
+            .map(k => buildStorageUrl(item[k], 'video', mediaContext))
+            .filter(Boolean);
+
           const signature = `${sourceLabel}:${nextPath}:${id}:${title}:${status}:${type}`;
           if (seen.has(signature)) {
             return [];
@@ -736,6 +838,11 @@ const flattenTaskNode = (
               sourceLabel,
               taskCategory,
               taskDate,
+              imageUrls,
+              videoUrls,
+              images: imageUrls.length,
+              videos: videoUrls.length,
+              description: resolveLeafDescription(item),
               raw: item,
               originalPath:
                 rootPath && nextPath ? `${rootPath}/${nextPath}` : null,
@@ -907,8 +1014,22 @@ const STATUS_META = {
 
 const DashboardScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const { startTracking, stopTracking } = useLocation();
+  const { stopTracking, startTracking, isIgnoringBatteryOptimizations } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuSlideAnim = React.useRef(new Animated.Value(Dimensions.get('window').width)).current;
+
+  React.useEffect(() => {
+    if (menuOpen) {
+      Animated.spring(menuSlideAnim, {
+        toValue: 0,
+        tension: 65,
+        friction: 11,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      menuSlideAnim.setValue(Dimensions.get('window').width);
+    }
+  }, [menuOpen, menuSlideAnim]);
   const [fabOpen, setFabOpen] = useState(false);
   const [actionModalVisible, setActionModalVisible] = useState(false);
   const [actionModalMode, setActionModalMode] = useState('add_kpi');
@@ -920,12 +1041,45 @@ const DashboardScreen = ({ navigation }) => {
   const [tasksError, setTasksError] = useState('');
   const [tasksRefreshing, setTasksRefreshing] = useState(false);
   const [tasksReloadToken, setTasksReloadToken] = useState(0);
+  const [batteryPromptChecked, setBatteryPromptChecked] = useState(false);
+  const [trackingPermissionGranted, setTrackingPermissionGranted] = useState(false);
   const { showAlert } = useAppFeedback();
+  const TaskActionModal = actionModalVisible
+    ? require('../components/TaskActionModal').default
+    : null;
+  const backgroundPermissionPromptShownRef = React.useRef(false);
 
-  // Start location tracking when Dashboard mounts (user logged in)
+  const runAfterGesture = callback => {
+    requestAnimationFrame(() => {
+      setTimeout(callback, 0);
+    });
+  };
+
   useEffect(() => {
-    startTracking();
-  }, [startTracking]);
+    console.log('[Dashboard] render state', {
+      employeeName,
+      loginId: loginId || '(empty)',
+      tasksCount: tasks.length,
+      tasksLoading,
+      tasksError: tasksError || '(none)',
+      menuOpen,
+      fabOpen,
+      actionModalVisible,
+      actionModalMode,
+      hasActionTask: Boolean(actionModalTask),
+    });
+  }, [
+    actionModalMode,
+    actionModalTask,
+    actionModalVisible,
+    employeeName,
+    fabOpen,
+    loginId,
+    menuOpen,
+    tasks.length,
+    tasksError,
+    tasksLoading,
+  ]);
 
   const metrics = useMemo(() => {
     const pendingCount = tasks.filter(task => task.status === 'Pending').length;
@@ -943,11 +1097,14 @@ const DashboardScreen = ({ navigation }) => {
 
   useEffect(() => {
     let isActive = true;
+    const startedAt = Date.now();
+    console.log('[Dashboard] session hydrate start');
 
     const hydrateSession = async () => {
       try {
         const session = await loadLoginSession();
         if (!isActive || !session) {
+          console.log('[Dashboard] session missing or inactive');
           return;
         }
 
@@ -967,10 +1124,14 @@ const DashboardScreen = ({ navigation }) => {
             session.employee?.id ||
             '',
         );
+        console.log('[Dashboard] session hydrated', {
+          loginId: session.loginId || session.employee?.userId || session.employee?.id || '',
+        });
       } catch {
         if (isActive) {
           setEmployeeName('Employee');
           setLoginId('');
+          console.log('[Dashboard] session hydrate failed, fallback applied');
         }
       }
     };
@@ -979,11 +1140,18 @@ const DashboardScreen = ({ navigation }) => {
 
     return () => {
       isActive = false;
+      console.log('[Dashboard] session hydrate cleanup', {
+        elapsedMs: Date.now() - startedAt,
+      });
     };
   }, []);
 
   useEffect(() => {
     let isActive = true;
+    const startedAt = Date.now();
+    console.log('[Dashboard] task load scheduled', {
+      loginId: loginId || '(empty)',
+    });
 
     const loadTasks = async () => {
       if (!loginId) {
@@ -992,27 +1160,42 @@ const DashboardScreen = ({ navigation }) => {
           setTasksError('');
           setTasksLoading(false);
         }
+        console.log('[Dashboard] task load skipped - missing loginId');
         return;
       }
 
       setTasksLoading(true);
       setTasksError('');
+      console.log('[Dashboard] task load begin', { loginId });
+
+      const dateParts = getCurrentDateParts();
+
+      // 1. Try to load from cache first for instant UI
+      try {
+        const cached = await readDashboardTaskCache(loginId, dateParts.isoDate);
+        if (cached && cached.tasks && isActive) {
+          console.log('[Dashboard] using cached tasks', { count: cached.tasks.length });
+          setTasks(cached.tasks);
+          // If we have cache, we still fetch in background but maybe don't show full loader
+        }
+      } catch (e) {
+        console.log('[Dashboard] cache read error', e);
+      }
 
       try {
-        const dateParts = getCurrentDateParts();
         const kpiPaths = [`IECData/IECKPITasks/${loginId}`];
-
         const priorityPaths = [
           `IECData/IECPriorityTasks/${loginId}/${dateParts.isoDate}`,
         ];
-
         const currentTaskPaths = [
           `IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.monthName}/${dateParts.isoDate}`,
         ];
 
-        const [taskCatalog, kpiResult, priorityResult, currentResult] =
+        // 2. Load Catalog (with its own cache)
+        let taskCatalog = (await readTaskCatalogCache()) || {};
+        
+        const [kpiResult, priorityResult, currentResult] =
           await Promise.all([
-            getData('IECData/Tasks'),
             readFirstExistingPath(kpiPaths),
             readFirstExistingPath(priorityPaths),
             readFirstExistingPath(currentTaskPaths),
@@ -1048,7 +1231,39 @@ const DashboardScreen = ({ navigation }) => {
           currentStatusMap,
         );
         const combinedTasks = [...assignedTasks, ...displayableCurrentTasks];
-        const dedupedTasks = dedupeDashboardTasks(combinedTasks).sort(
+        // 3. Deep Fetch missing task details if they are not in the catalog
+        const tasksNeedingInfo = combinedTasks.filter(t => {
+          const hasDetailsInCatalog = taskCatalog && taskCatalog[t.resolvedTaskId];
+          const hasDetailsInTask = t.description || (t.raw && resolveLeafDescription(t.raw));
+          return !hasDetailsInCatalog && !hasDetailsInTask;
+        });
+
+        if (tasksNeedingInfo.length > 0) {
+          console.log(`[Dashboard] fetching details for ${tasksNeedingInfo.length} missing tasks`);
+          await Promise.all(tasksNeedingInfo.map(async (t) => {
+            try {
+              const details = await getData(`IECData/Tasks/${t.resolvedTaskId}`);
+              if (details) {
+                taskCatalog[t.resolvedTaskId] = details;
+              }
+            } catch (e) {
+              console.log(`[Dashboard] failed to fetch details for ${t.resolvedTaskId}`, e);
+            }
+          }));
+          await saveTaskCatalogCache(taskCatalog);
+        }
+
+        // Re-normalize titles and descriptions after deep fetch
+        const finalTasks = combinedTasks.map(t => {
+          const catalogEntry = taskCatalog[t.resolvedTaskId];
+          return {
+            ...t,
+            title: t.title && t.title !== t.resolvedTaskId ? t.title : (resolveLeafTitle(catalogEntry) || t.title),
+            description: t.description || resolveLeafDescription(catalogEntry) || '',
+          };
+        });
+
+        const dedupedTasks = dedupeDashboardTasks(finalTasks).sort(
           (left, right) => {
             const leftRank = getDashboardTaskOrderRank(left);
             const rightRank = getDashboardTaskOrderRank(right);
@@ -1070,12 +1285,25 @@ const DashboardScreen = ({ navigation }) => {
 
         if (isActive) {
           setTasks(dedupedTasks);
+          // 3. Save to cache for next time
+          await saveDashboardTaskCache(loginId, dateParts.isoDate, dedupedTasks);
         }
+        console.log('[Dashboard] task load success', {
+          total: dedupedTasks.length,
+          elapsedMs: Date.now() - startedAt,
+        });
       } catch (error) {
         if (isActive) {
-          setTasks([]);
-          setTasksError(error?.message || 'Unable to load tasks.');
+          // If we have tasks from cache, don't show error if network fails
+          if (tasks.length === 0) {
+            setTasks([]);
+            setTasksError(error?.message || 'Unable to load tasks.');
+          }
         }
+        console.log('[Dashboard] task load failed', {
+          message: error?.message || 'Unable to load tasks.',
+          elapsedMs: Date.now() - startedAt,
+        });
       } finally {
         if (isActive) {
           setTasksLoading(false);
@@ -1084,14 +1312,109 @@ const DashboardScreen = ({ navigation }) => {
       }
     };
 
-    loadTasks();
+    const interactionHandle = InteractionManager.runAfterInteractions(() => {
+      if (isActive) {
+        loadTasks();
+      }
+    });
 
     return () => {
       isActive = false;
+      interactionHandle?.cancel?.();
+      console.log('[Dashboard] task load cleanup', {
+        elapsedMs: Date.now() - startedAt,
+      });
     };
   }, [loginId, tasksReloadToken]);
 
+  // Handle location tracking start conditionally
+  useEffect(() => {
+    if (loginId && trackingPermissionGranted) {
+      console.log('[Dashboard] starting location tracking (permission confirmed)');
+      startTracking();
+    }
+  }, [loginId, trackingPermissionGranted, startTracking]);
+
+  const checkAndShowBatteryPrompt = React.useCallback(async () => {
+    if (!loginId || tasksLoading || tasks.length === 0) return;
+
+    try {
+      // 1. Check actual system status first
+      const isExempt = await isIgnoringBatteryOptimizations();
+      if (isExempt) {
+        setBatteryPromptChecked(true);
+        setTrackingPermissionGranted(true);
+        return;
+      }
+
+      // 2. If not exempt, check if we already showed the prompt
+      if (batteryPromptChecked || backgroundPermissionPromptShownRef.current) return;
+
+      const handled = await AsyncStorage.getItem(`battery_prompt_handled_${loginId}`);
+      if (handled === 'true') {
+        setBatteryPromptChecked(true);
+        // Still not exempt, so don't setTrackingPermissionGranted
+        return;
+      }
+
+      backgroundPermissionPromptShownRef.current = true;
+      console.log('[Dashboard] auto background permission popup requested');
+      showAlert({
+        title: 'Keep Tracking Active',
+        message:
+          'Location is already enabled. Please set battery to No Restriction to keep tracking active.',
+        variant: 'warning',
+        dismissible: false,
+        buttons: [
+          {
+            text: 'Not Now',
+            style: 'cancel',
+            onPress: () => {
+              setBatteryPromptChecked(true);
+              AsyncStorage.setItem(`battery_prompt_handled_${loginId}`, 'true').catch(() => {});
+            },
+          },
+          {
+            text: 'Allow No Restriction',
+            onPress: async () => {
+              try {
+                console.log('[Dashboard] auto battery setting permission confirmed');
+                await AsyncStorage.setItem(`battery_prompt_handled_${loginId}`, 'true');
+                setBatteryPromptChecked(true);
+                await requestIgnoreBatteryOptimizations();
+                // After returning from settings, the AppState listener will re-check
+              } catch (error) {
+                console.log('[Dashboard] auto battery setting permission failed', {
+                  message: error?.message || '(no message)',
+                });
+              }
+            },
+          },
+        ],
+      });
+    } catch (e) {
+      console.log('[Dashboard] battery prompt check error', e);
+    }
+  }, [loginId, tasksLoading, tasks.length, batteryPromptChecked, isIgnoringBatteryOptimizations, showAlert]);
+
+  useEffect(() => {
+    checkAndShowBatteryPrompt();
+  }, [checkAndShowBatteryPrompt]);
+
+  // Re-check when app returns to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        console.log('[Dashboard] app active - re-checking battery permission');
+        checkAndShowBatteryPrompt();
+      }
+    });
+    return () => subscription.remove();
+  }, [checkAndShowBatteryPrompt]);
+
+
   const handleRefreshTasks = async () => {
+    console.log('[Dashboard] manual refresh requested');
     setTasksRefreshing(true);
     setTasksError('');
 
@@ -1102,14 +1425,21 @@ const DashboardScreen = ({ navigation }) => {
         session?.employee?.userId ||
         session?.employee?.id ||
         '';
+      console.log('[Dashboard] manual refresh session', {
+        refreshedLoginId: refreshedLoginId || '(empty)',
+      });
       setLoginId(refreshedLoginId);
       setTasksReloadToken(token => token + 1);
     } catch (error) {
+      console.log('[Dashboard] manual refresh failed', {
+        message: error?.message || '(no message)',
+      });
       setTasksRefreshing(false);
     }
   };
 
   const handleLogout = () => {
+    console.log('[Dashboard] logout prompt opened');
     setMenuOpen(false);
     showAlert({
       title: 'Logout',
@@ -1124,10 +1454,15 @@ const DashboardScreen = ({ navigation }) => {
         {
           text: 'Yes',
           onPress: async () => {
-            stopTracking();
-            await clearLoginSession();
-            await clearMediaCache();
-            navigation.replace('Login');
+            runAfterGesture(async () => {
+              console.log('[Dashboard] logout confirmed');
+              stopTracking();
+              await clearLoginSession();
+              await clearMediaCache();
+              await clearTaskCache();
+              console.log('[Dashboard] navigating to Login');
+              navigation.replace('Login');
+            });
           },
         },
       ],
@@ -1136,13 +1471,26 @@ const DashboardScreen = ({ navigation }) => {
 
   const handleTaskAction = task => {
     if (task.status === 'Pending') {
-      setActionModalTask(task);
-      setActionModalMode('pick_task');
-      setActionModalVisible(true);
+      console.log('[Dashboard] direct task pick requested', {
+        id: task?.id || '(empty)',
+        title: task?.title || '(empty)',
+      });
+      handleStartTask(task);
     }
   };
 
+  const handleStartTask = task => {
+    console.log('[Dashboard] task start confirmed', {
+      id: task?.id || '(empty)',
+      title: task?.title || '(empty)',
+    });
+    setActionModalTask(task);
+    setActionModalMode('pick_task');
+    setActionModalVisible(true);
+  };
+
   const handleAddTask = mode => {
+    console.log('[Dashboard] add task requested', { mode });
     setFabOpen(false);
     setActionModalTask(null);
     setActionModalMode(mode);
@@ -1412,18 +1760,27 @@ const DashboardScreen = ({ navigation }) => {
       <Modal
         transparent
         visible={menuOpen}
-        animationType="fade"
+        animationType="none"
         onRequestClose={() => setMenuOpen(false)}
       >
-        <Pressable
-          style={styles.menuOverlay}
-          onPress={() => setMenuOpen(false)}
-        >
-          <View style={styles.menuPanel}>
+        <View style={styles.menuOverlay}>
+          <Pressable
+            style={styles.menuBackdrop}
+            onPress={() => setMenuOpen(false)}
+          />
+          <Animated.View
+            style={[
+              styles.menuPanel,
+              { transform: [{ translateX: menuSlideAnim }] },
+            ]}
+          >
             <Pressable
-              onPress={() => {
-                setMenuOpen(false);
-                navigation?.navigate?.('TaskMonitoring');
+            onPress={() => {
+                runAfterGesture(() => {
+                  console.log('[Dashboard] navigating to TaskMonitoring');
+                  setMenuOpen(false);
+                  navigation?.navigate?.('TaskMonitoring');
+                });
               }}
               style={({ pressed }) => [
                 styles.menuItem,
@@ -1442,8 +1799,6 @@ const DashboardScreen = ({ navigation }) => {
                 <Text style={styles.menuSubtitle}>View overall status</Text>
               </View>
             </Pressable>
-
-            <View style={styles.menuDivider} />
 
             <Pressable
               onPress={handleLogout}
@@ -1464,19 +1819,22 @@ const DashboardScreen = ({ navigation }) => {
                 <Text style={styles.menuSubtitle}>Exit application</Text>
               </View>
             </Pressable>
-          </View>
-        </Pressable>
+          </Animated.View>
+        </View>
       </Modal>
 
+
       {/* Unified Task Action Modal */}
-      <TaskActionModal
-        visible={actionModalVisible}
-        onClose={() => setActionModalVisible(false)}
-        onSaved={() => setTasksReloadToken(token => token + 1)}
-        mode={actionModalMode}
-        taskOptions={tasks}
-        initialTask={actionModalTask}
-      />
+      {actionModalVisible && TaskActionModal ? (
+        <TaskActionModal
+          visible={actionModalVisible}
+          onClose={() => setActionModalVisible(false)}
+          onSaved={() => setTasksReloadToken(token => token + 1)}
+          mode={actionModalMode}
+          taskOptions={tasks}
+          initialTask={actionModalTask}
+        />
+      ) : null}
     </SafeAreaView>
   );
 };
@@ -1821,6 +2179,9 @@ const styles = StyleSheet.create({
     paddingTop: 72,
     paddingRight: 20,
     alignItems: 'flex-end',
+  },
+  menuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
   },
   menuPanel: {
     width: 240,

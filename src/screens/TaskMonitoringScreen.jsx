@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   FlatList,
   Modal,
@@ -16,7 +16,6 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
 import { useTaskMonitoring } from '../actions/taskMonitoringActions';
-import MediaViewer from '../components/MediaViewer/MediaViewer';
 
 const STATUS_META = {
   Pending: {
@@ -135,6 +134,9 @@ const TaskMonitoringScreen = ({ navigation }) => {
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [mediaImages, setMediaImages] = useState([]);
   const [mediaVideos, setMediaVideos] = useState([]);
+  const MediaViewer = mediaViewerOpen
+    ? require('../components/MediaViewer/MediaViewer').default
+    : null;
 
   const calendarDays = useMemo(
     () => getDaysInMonth(calendarMonth),
@@ -149,9 +151,51 @@ const TaskMonitoringScreen = ({ navigation }) => {
   };
 
   const handleOpenDatePicker = useCallback(() => {
+    console.log('[TaskMonitoring] open date picker', {
+      selectedDate,
+    });
     setCalendarMonth(parseDate(selectedDate));
     setDatePickerOpen(true);
   }, [selectedDate, setCalendarMonth]);
+
+  useEffect(() => {
+    console.log('[TaskMonitoring] screen mounted', {
+      selectedDate,
+      selectedFilter,
+      tasksCount: tasks.length,
+      filteredCount: filteredTasks.length,
+    });
+
+    return () => {
+      console.log('[TaskMonitoring] screen unmounted');
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log('[TaskMonitoring] render state', {
+      selectedFilter,
+      selectedDate,
+      calendarMonth: getMonthLabel(calendarMonth),
+      tasksCount: tasks.length,
+      filteredCount: filteredTasks.length,
+      stats,
+      datePickerOpen,
+      filterMenuOpen,
+      hasSelectedTask: Boolean(selectedTask),
+      mediaViewerOpen,
+    });
+  }, [
+    calendarMonth,
+    datePickerOpen,
+    filterMenuOpen,
+    filteredTasks.length,
+    mediaViewerOpen,
+    selectedDate,
+    selectedFilter,
+    selectedTask,
+    stats,
+    tasks.length,
+  ]);
 
   const renderTask = ({ item }) => {
     const status = STATUS_META[item.status] ?? STATUS_META.Pending;
@@ -166,7 +210,16 @@ const TaskMonitoringScreen = ({ navigation }) => {
     return (
       <Pressable
         style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-        onPress={() => setSelectedTask(item)}
+        onPress={() => {
+          console.log('[TaskMonitoring] task selected', {
+            id: item?.id || '(empty)',
+            title: item?.title || '(empty)',
+            status: item?.status || '(empty)',
+            images: item?.images ?? 0,
+            videos: item?.videos ?? 0,
+          });
+          setSelectedTask(item);
+        }}
       >
         <View style={styles.cardTopRow}>
           <View style={styles.typeChip}>
@@ -547,7 +600,9 @@ const TaskMonitoringScreen = ({ navigation }) => {
           <Pressable style={styles.detailCard} onPress={() => {}}>
             <View style={styles.detailHeader}>
               <View style={styles.detailHeaderText}>
-                <Text style={styles.detailType}>{selectedTask?.type}</Text>
+                <Text style={styles.detailType}>
+                  {selectedTask?.taskCategory || selectedTask?.sourceLabel || 'Other'}
+                </Text>
                 <Text style={styles.detailTitle}>{selectedTask?.title}</Text>
               </View>
               <TouchableOpacity
@@ -626,6 +681,12 @@ const TaskMonitoringScreen = ({ navigation }) => {
               <TouchableOpacity
                 style={styles.viewMediaButton}
                 onPress={() => {
+                  console.log('[TaskMonitoring] view media requested', {
+                    taskId: selectedTask?.id || '(empty)',
+                    title: selectedTask?.title || '(empty)',
+                    images: selectedTask?.imageUrls?.length || 0,
+                    videos: selectedTask?.videoUrls?.length || 0,
+                  });
                   const imgs = selectedTask?.imageUrls || [];
                   const vids = selectedTask?.videoUrls || [];
                   setMediaImages(imgs);
@@ -649,6 +710,7 @@ const TaskMonitoringScreen = ({ navigation }) => {
         </Pressable>
       </Modal>
 
+      {mediaViewerOpen && MediaViewer ? (
       <MediaViewer
         visible={mediaViewerOpen}
         images={mediaImages}
@@ -656,6 +718,7 @@ const TaskMonitoringScreen = ({ navigation }) => {
         taskMeta={selectedTask}
         onClose={() => setMediaViewerOpen(false)}
       />
+      ) : null}
     </SafeAreaView>
   );
 };

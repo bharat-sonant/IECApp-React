@@ -110,6 +110,21 @@ class LocationModule(private val reactContext: ReactApplicationContext)
     }
 
     /**
+     * Checks if the app is already exempt from battery optimizations.
+     */
+    @ReactMethod
+    fun isIgnoringBatteryOptimizations(promise: Promise) {
+        try {
+            val context = reactContext.applicationContext
+            val pm = context.getSystemService(android.os.PowerManager::class.java)
+            val packageName = context.packageName
+            promise.resolve(pm?.isIgnoringBatteryOptimizations(packageName) == true)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    /**
      * Reads location snapshots buffered in SharedPreferences while JS bridge was dead
      * (app was killed). Clears the buffer immediately after reading.
      * Returns array of { path, distanceInMeters, time, date }.

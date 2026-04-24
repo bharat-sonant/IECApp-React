@@ -13,22 +13,28 @@ export const initializeFirebaseApp = async () => {
   }
 
   _initPromise = (async () => {
-    const {getApp, getApps, initializeApp} = require('@react-native-firebase/app');
-    const existingApps = getApps();
-    if (existingApps.length > 0) {
-      _rnApp = getApp();
-    } else {
-      _rnApp = initializeApp({
-        apiKey: FIREBASE_CONFIG.apiKey,
-        appId: FIREBASE_CONFIG.appId,
-        projectId: FIREBASE_CONFIG.projectId,
-        databaseURL: FIREBASE_CONFIG.databaseURL,
-        storageBucket: FIREBASE_CONFIG.storageBucket,
-        messagingSenderId: FIREBASE_CONFIG.messagingSenderId,
-      });
+    try {
+      const {getApp, getApps, initializeApp} = require('@react-native-firebase/app');
+      const existingApps = getApps();
+      if (existingApps.length > 0) {
+        console.log('[Firebase] Using existing app');
+        _rnApp = getApp();
+      } else {
+        console.log('[Firebase] Initializing new app with programmatic config');
+        _rnApp = initializeApp({
+          apiKey: FIREBASE_CONFIG.apiKey,
+          appId: FIREBASE_CONFIG.appId,
+          projectId: FIREBASE_CONFIG.projectId,
+          databaseURL: FIREBASE_CONFIG.databaseURL,
+          storageBucket: FIREBASE_CONFIG.storageBucket,
+          messagingSenderId: FIREBASE_CONFIG.messagingSenderId,
+        });
+      }
+      return _rnApp;
+    } catch (error) {
+      console.error('[Firebase] Initialization failed:', error);
+      throw error;
     }
-
-    return _rnApp;
   })();
 
   try {
@@ -44,13 +50,19 @@ const ensureApp = async () => {
 };
 
 export const getData = async path => {
-  const {getDatabase, get, ref} = require('@react-native-firebase/database');
-  const app = await ensureApp();
-  const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
-  const snapshot = await get(ref(db, path));
-  const exists = snapshot.exists();
-  const value = exists ? snapshot.val() : null;
-  return value;
+  try {
+    const {getDatabase, get, ref} = require('@react-native-firebase/database');
+    const app = await ensureApp();
+    const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
+    console.log('[Firebase] Fetching data from path:', path);
+    const snapshot = await get(ref(db, path));
+    const exists = snapshot.exists();
+    const value = exists ? snapshot.val() : null;
+    return value;
+  } catch (error) {
+    console.error(`[Firebase] getData failed for path "${path}":`, error);
+    return null;
+  }
 };
 
 export const saveData = async (path, data) => {

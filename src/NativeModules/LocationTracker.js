@@ -39,6 +39,20 @@ export const requestIgnoreBatteryOptimizations = async () => {
 };
 
 /**
+ * Checks if the app is already exempt from battery optimizations.
+ */
+export const isIgnoringBatteryOptimizations = async () => {
+  if (Platform.OS !== 'android' || !LocationTracker?.isIgnoringBatteryOptimizations) {
+    return false;
+  }
+  try {
+    return await LocationTracker.isIgnoringBatteryOptimizations();
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Start foreground location tracking service.
  * Call setTrackingConfig() first if you want custom intervals.
  */

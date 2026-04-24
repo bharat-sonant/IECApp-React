@@ -88,7 +88,7 @@ const LoginScreen = ({navigation}) => {
       }
 
       await saveLoginSession(result);
-      await startTracking();
+      console.log('[Login] background tracking not started automatically');
       navigation.replace('Dashboard', result);
     } catch (error) {
       setLoginMessage(error?.message || 'Unable to save session. Please try again.');

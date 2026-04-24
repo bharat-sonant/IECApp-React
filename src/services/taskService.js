@@ -118,6 +118,7 @@ const buildOldTaskPayload = ({
     wardNo: asString(ward),
     noOfParticipants: asString(participants),
     taskCategory,
+    status: '1',
   };
 
   return payload;
@@ -271,8 +272,8 @@ export const saveTaskSubmission = async ({
     mode,
   });
 
-  // If no valid location, try to fetch from tracking service (with geocoded address)
-  if (!payload.latLng || (payload.latitude === 0 && payload.longitude === 0)) {
+  // If no valid location provided, try to fetch from tracking service
+  if (!payload.latLng || (location?.latitude === 0 && location?.longitude === 0)) {
     try {
       const locResult = await getUserCurrentLocation();
       if (
@@ -281,11 +282,11 @@ export const saveTaskSubmission = async ({
         locResult.location?.longitude
       ) {
         payload.latLng = `${locResult.location.latitude},${locResult.location.longitude}`;
-        // Also set the address from geocoding (like old Android app)
-        payload.address =
-          locResult.location?.address || STATIC_LOCATION.address;
+        payload.address = locResult.location?.address || payload.address || STATIC_LOCATION.address;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.log('[taskService] secondary location fetch failed', e);
+    }
   }
 
   // Build full storage paths for upload queue only
@@ -297,15 +298,14 @@ export const saveTaskSubmission = async ({
       year,
       month,
       currentDate,
-      taskKey: nextTaskCount,
-      taskCount: index + 1,
+      taskKey: `${taskKey}/${nextTaskCount}`,
       fileName: imageFileName,
     });
   });
 
   const videoStoragePaths = normalizedVideos.map((video, index) => {
     const videoFileName = `video${index + 1}.mp4`;
-    return `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${nextTaskCount}/${index + 1}/${videoFileName}`;
+    return `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${taskKey}/${nextTaskCount}/${videoFileName}`;
   });
 
   // Save ONLY filename to DB (path will be constructed when reading)
@@ -316,13 +316,10 @@ export const saveTaskSubmission = async ({
     payload[`video${index + 1}`] = `video${index + 1}.mp4`;
   });
 
-  // Save key info for constructing path later
-  payload.mediaKey = nextTaskCount;
-  payload.mediaCount = nextTaskCount;
 
   const { getDatabase, ref } = require('@react-native-firebase/database');
   const app = await initializeFirebaseApp();
-  const db = getDatabase(getDatabase, FIREBASE_CONFIG?.databaseURL);
+  const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
   const taskBucketRef = ref(db, taskRootPath);
 
   const transactionResult = await taskBucketRef.transaction(current => {

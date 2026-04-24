@@ -252,7 +252,6 @@ export const buildPendingMediaPath = ({
   month,
   currentDate,
   taskKey,
-  taskCount,
   fileName,
 }) =>
-  `${cityName || city ? `${cityName || city}/` : ''}IECData/IECTasksImages/${userId}/${year}/${month}/${currentDate}/${taskKey}/${taskCount}/${fileName}`;
+  `${cityName || city ? `${cityName || city}/` : ''}IECData/IECTasksImages/${userId}/${year}/${month}/${currentDate}/${taskKey}/${fileName}`;
