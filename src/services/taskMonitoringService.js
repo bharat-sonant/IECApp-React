@@ -75,7 +75,22 @@ const buildStorageUrl = (
   }
 
   const encodedPath = encodeURIComponent(fullPath);
-  const url = `${CITY.firebaseStoragePath}${encodedPath}?alt=media`;
+  
+  // Use the task's timestamp as a cache buster to prevent RN from showing old cached images
+  // if the same task/path was overwritten.
+  let cacheBuster = '';
+  const dateStrForBuster = getFirstText(taskData?._at, taskData?.date, parentData?._at, parentData?.date);
+  if (dateStrForBuster) {
+    const parsed = new Date(dateStrForBuster).getTime();
+    if (!Number.isNaN(parsed)) {
+      cacheBuster = `&cb=${parsed}`;
+    }
+  } else {
+    // Fallback for local dev testing if they rapidly delete/recreate
+    cacheBuster = `&cb=${Date.now()}`;
+  }
+
+  const url = `${CITY.firebaseStoragePath}${encodedPath}?alt=media${cacheBuster}`;
   console.log(`[MediaURL] ${type} -> fullPath:`, fullPath, '-> url:', url);
   return url;
 };

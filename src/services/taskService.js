@@ -19,6 +19,21 @@ const STATIC_LOCATION = {
   longitude: 0,
   address: 'Location not captured',
 };
+const isValidCoordinate = value => {
+  const number = Number(value);
+  return Number.isFinite(number) && number !== 0;
+};
+
+const isValidLocation = location =>
+  isValidCoordinate(location?.latitude) &&
+  isValidCoordinate(location?.longitude) &&
+  asString(location?.address).length > 0;
+
+const formatLocationPair = location =>
+  `${Number(location?.latitude)},${Number(location?.longitude)}`;
+
+const includesToken = (value, token) =>
+  asString(value).toLowerCase().includes(token);
 const getSessionUserId = session =>
   asString(
     session?.loginId ||
@@ -89,28 +104,41 @@ const buildOldTaskPayload = ({
   const sourceLabel = asString(
     taskChoice?.sourceLabel || taskChoice?.taskCategory || '',
   ).toLowerCase();
+  const explicitCategory = asString(
+    taskChoice?.taskCategory || taskChoice?.TaskCategory,
+  ).toLowerCase();
   const isPriorityTask =
     sourcePath.includes('IECPriorityTasks') ||
-    sourceLabel === 'priority' ||
+    includesToken(explicitCategory, 'priority') ||
+    includesToken(sourceLabel, 'priority') ||
     priority === 'high' ||
     asString(
       taskChoice?.taskPriority || taskChoice?.TaskPriority,
-    ).toLowerCase() === 'high';
+    ).toLowerCase() === 'high' ||
+    includesToken(taskChoice?.type || taskChoice?.Type, 'priority');
   const isOtherTask =
-    mode === 'add_other' || sourceLabel === 'other' || sourceLabel === 'self';
-  const taskCategory = isOtherTask
-    ? 'Other'
-    : isPriorityTask
-      ? 'Priority'
-      : 'KPI';
-  const taskTypeValue = isOtherTask
-    ? 'low'
-    : isPriorityTask
-      ? 'high'
+    includesToken(explicitCategory, 'other') ||
+    includesToken(explicitCategory, 'self') ||
+    includesToken(sourceLabel, 'other') ||
+    includesToken(sourceLabel, 'self') ||
+    sourcePath.includes('IECData/Tasks');
+  const taskCategory = isPriorityTask
+    ? 'Priority'
+    : isOtherTask
+      ? 'Other'
+      : mode === 'add_other'
+        ? 'Other'
+        : 'KPI';
+  const taskTypeValue = isPriorityTask
+    ? 'high'
+    : isOtherTask
+      ? 'low'
       : 'medium';
   const payload = {
     _at: currentDateTime,
-    latLng: latitude && longitude ? `${latitude},${longitude}` : '',
+    latLng: isValidCoordinate(latitude) && isValidCoordinate(longitude)
+      ? formatLocationPair({ latitude, longitude })
+      : '',
     address: asString(address),
     type: taskTypeValue,
     title: asString(taskChoice?.title || taskChoice?.taskName || ''),
@@ -258,7 +286,6 @@ export const saveTaskSubmission = async ({
   const normalizedImages = normalizeMediaList(images);
   const normalizedVideos = normalizeMediaList(videos);
   let nextTaskCount = 1;
-  const mediaTaskCount = () => nextTaskCount;
 
   const payload = buildOldTaskPayload({
     remark,
@@ -273,7 +300,7 @@ export const saveTaskSubmission = async ({
   });
 
   // If no valid location provided, try to fetch from tracking service
-  if (!payload.latLng || (location?.latitude === 0 && location?.longitude === 0)) {
+  if (!isValidLocation(location)) {
     try {
       const locResult = await getUserCurrentLocation();
       if (
@@ -281,7 +308,7 @@ export const saveTaskSubmission = async ({
         locResult.location?.latitude &&
         locResult.location?.longitude
       ) {
-        payload.latLng = `${locResult.location.latitude},${locResult.location.longitude}`;
+        payload.latLng = formatLocationPair(locResult.location);
         payload.address = locResult.location?.address || payload.address || STATIC_LOCATION.address;
       }
     } catch (e) {
@@ -289,23 +316,21 @@ export const saveTaskSubmission = async ({
     }
   }
 
-  // Build full storage paths for upload queue only
-  const imageStoragePaths = normalizedImages.map((image, index) => {
-    const imageFileName = `image${index + 1}.jpg`;
-    return buildPendingMediaPath({
-      userId,
-      cityName,
-      year,
-      month,
-      currentDate,
-      taskKey: `${taskKey}/${nextTaskCount}`,
-      fileName: imageFileName,
-    });
-  });
+  const finalLocation = {
+    latitude: payload.latLng ? Number(String(payload.latLng).split(',')[0]) : 0,
+    longitude: payload.latLng ? Number(String(payload.latLng).split(',')[1]) : 0,
+    address: payload.address,
+  };
 
-  const videoStoragePaths = normalizedVideos.map((video, index) => {
-    const videoFileName = `video${index + 1}.mp4`;
-    return `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${taskKey}/${nextTaskCount}/${videoFileName}`;
+  if (!isValidLocation(finalLocation)) {
+    throw new Error(
+      'Location capture failed. Please enable GPS and try again before submitting.',
+    );
+  }
+
+  console.log('[taskService] final payload location before save:', {
+    latLng: payload.latLng,
+    address: payload.address,
   });
 
   // Save ONLY filename to DB (path will be constructed when reading)
@@ -368,6 +393,25 @@ export const saveTaskSubmission = async ({
       desc: selectedTask?.description || '',
     });
   }
+
+  // Build full storage paths for upload queue only AFTER transaction provides correct nextTaskCount
+  const imageStoragePaths = normalizedImages.map((image, index) => {
+    const imageFileName = `image${index + 1}.jpg`;
+    return buildPendingMediaPath({
+      userId,
+      cityName,
+      year,
+      month,
+      currentDate,
+      taskKey: `${taskKey}/${nextTaskCount}`,
+      fileName: imageFileName,
+    });
+  });
+
+  const videoStoragePaths = normalizedVideos.map((video, index) => {
+    const videoFileName = `video${index + 1}.mp4`;
+    return `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${taskKey}/${nextTaskCount}/${videoFileName}`;
+  });
 
   await Promise.all(
     normalizedImages.map(async (image, index) => {

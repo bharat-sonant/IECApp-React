@@ -69,27 +69,52 @@ const MediaRow = ({
   showLatLngOptions,
   videoThumbnailUri,
 }) => {
+  const [imgLoading, setImgLoading] = React.useState(true);
+  const [thumbLoading, setThumbLoading] = React.useState(true);
+
   return (
     <View style={styles.rowCard}>
       <Text style={styles.serialNumber}>{index + 1}</Text>
       {item.type === 'image' ? (
         <Pressable style={styles.thumbnailWrap} onPress={onPreview}>
-          <Image source={{ uri: item.uri }} style={styles.thumbnail} />
+          {imgLoading && (
+            <View style={styles.thumbnailLoader}>
+              <ActivityIndicator size="small" color={appTheme.colors.brand.primary} />
+            </View>
+          )}
+          <Image 
+            source={{ uri: item.uri }} 
+            style={styles.thumbnail} 
+            resizeMode="cover"
+            onLoadStart={() => setImgLoading(true)}
+            onLoadEnd={() => setImgLoading(false)}
+          />
         </Pressable>
       ) : (
         <View style={styles.thumbnailWrap}>
           <View style={styles.videoThumb}>
             {videoThumbnailUri ? (
-              <Image
-                source={{ uri: videoThumbnailUri }}
-                style={styles.videoThumbImage}
-              />
-            ) : null}
+              <>
+                {thumbLoading && (
+                  <View style={styles.thumbnailLoader}>
+                    <ActivityIndicator size="small" color={appTheme.colors.brand.primary} />
+                  </View>
+                )}
+                <Image
+                  source={{ uri: videoThumbnailUri }}
+                  style={styles.videoThumbImage}
+                  resizeMode="cover"
+                  onLoadStart={() => setThumbLoading(true)}
+                  onLoadEnd={() => setThumbLoading(false)}
+                />
+              </>
+            ) : (
+              <View style={[styles.thumbnailLoader, { backgroundColor: '#1E293B' }]}>
+                <MaterialCommunityIcons name="video-box" size={32} color="#64748B" />
+              </View>
+            )}
             <View style={styles.videoThumbOverlay} />
-            <View style={styles.videoBadge}>
-              <MaterialCommunityIcons name="play" size={18} color="#fff" />
-              <Text style={styles.videoBadgeText}>Video</Text>
-            </View>
+           
           </View>
         </View>
       )}
@@ -190,8 +215,11 @@ const MediaViewer = ({
     imagesCount: images.length,
     videosCount: videos.length,
     taskId: taskMeta?.id || taskMeta?.taskId || '(empty)',
+    imagesArray: images,
+    videosArray: videos,
   });
   const [previewUri, setPreviewUri] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [downloadingUri, setDownloadingUri] = useState('');
   const [downloadingLatLngUri, setDownloadingLatLngUri] = useState('');
   const [toastState, setToastState] = useState(null);
@@ -245,8 +273,9 @@ const MediaViewer = ({
   }, [visible, taskMeta, latLng]);
 
   const imageItems = useMemo(
-    () =>
-      images
+    () => {
+      console.log('[MediaViewer] mapping imageItems from:', images);
+      return images
         .map((uri, index) => {
           if (typeof uri !== 'string' || !uri.trim()) {
             return null;
@@ -261,13 +290,15 @@ const MediaViewer = ({
             label: `Image ${index + 1}`,
           };
         })
-        .filter(Boolean),
+        .filter(Boolean);
+    },
     [images],
   );
 
   const videoItems = useMemo(
-    () =>
-      videos
+    () => {
+      console.log('[MediaViewer] mapping videoItems from:', videos);
+      return videos
         .map((uri, index) => {
           if (typeof uri !== 'string' || !uri.trim()) {
             return null;
@@ -282,7 +313,8 @@ const MediaViewer = ({
             label: `Video ${index + 1}`,
           };
         })
-        .filter(Boolean),
+        .filter(Boolean);
+    },
     [videos],
   );
 
@@ -301,12 +333,18 @@ const MediaViewer = ({
       await Promise.all(
         videoItems.map(async item => {
           try {
-            const result = await createVideoThumbnail(item.uri);
-            if (result?.path) {
+            // Wrap createVideoThumbnail in a timeout to prevent it from hanging the bridge/network
+            const thumbnailPromise = createVideoThumbnail(item.uri);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Thumbnail generation timed out')), 5000)
+            );
+            const result = await Promise.race([thumbnailPromise, timeoutPromise]);
+            
+            if (result?.path && isMounted) {
               nextThumbs[item.uri] = result.path;
             }
           } catch (error) {
-            console.log('[MediaViewer] Thumbnail generation failed', error);
+            console.log('[MediaViewer] Thumbnail generation failed/timed out for', item.uri, error);
           }
         }),
       );
@@ -356,12 +394,18 @@ const MediaViewer = ({
       }
 
       const rawFileName = item.fileName || `media_${Date.now()}`;
-      const fileName = rawFileName;
-      const baseName = fileName.replace(/\.[^.]+$/, '');
+      const baseName = rawFileName.replace(/\.[^.]+$/, '');
+      const extension = rawFileName.substring(rawFileName.lastIndexOf('.'));
+      
+      const safeTaskId = String(taskMeta?.taskId || taskMeta?.id || 'Task').replace(/[^a-zA-Z0-9]/g, '_');
+      const safeKey = String(taskMeta?.key || taskMeta?.mediaKey || '1').replace(/[^a-zA-Z0-9]/g, '_');
+      const taskTimeRaw = String(taskMeta?._at || taskMeta?.date || '').replace(/[^a-zA-Z0-9]/g, '');
+      const timeSuffix = taskTimeRaw ? `_${taskTimeRaw}` : '';
+      
       const finalName =
         withLatLng && item.type === 'image'
-          ? `Edited_${baseName}_${Date.now()}.jpg`
-          : fileName;
+          ? `Edited_${safeTaskId}_${safeKey}${timeSuffix}_${baseName}.jpg`
+          : `${safeTaskId}_${safeKey}${timeSuffix}_${baseName}${extension}`;
 
       if (withLatLng && item.type === 'image') {
         if (!latLng || !MediaDownload?.downloadImageWithLatLng) {
@@ -373,28 +417,41 @@ const MediaViewer = ({
           item.uri,
           String(latitude).trim(),
           String(longitude).trim(),
-          `${baseName}_${Date.now()}.jpg`,
+          finalName,
           taskMeta?.address ?? '',
           taskMeta?._at ?? taskMeta?.date ?? '',
         );
         showToast('Image saved with Lat/Lng', 'success');
         console.log('[MediaViewer] Saved with Lat/Lng at', savedLocation);
       } else {
-        const downloadsDir =
-          RNFS.DownloadDirectoryPath ||
-          (RNFS.ExternalStorageDirectoryPath
-            ? `${RNFS.ExternalStorageDirectoryPath}/Download`
-            : '');
+        const safeDownloadsDir = RNFS.DownloadDirectoryPath || `${RNFS.ExternalStorageDirectoryPath}/Download`;
+        
+        // Ensure the directory exists to prevent 'No such file or directory' errors
+        const dirExists = await RNFS.exists(safeDownloadsDir);
+        if (!dirExists) {
+          try {
+            await RNFS.mkdir(safeDownloadsDir);
+          } catch (e) {
+            console.log('[MediaViewer] Failed to create download dir, falling back to Documents', e);
+          }
+        }
 
-        if (!downloadsDir) {
+        // If it still doesn't exist, fallback to DocumentDirectoryPath which is always accessible
+        const finalDir = (await RNFS.exists(safeDownloadsDir)) ? safeDownloadsDir : RNFS.DocumentDirectoryPath;
+        
+        if (!finalDir) {
           throw new Error('Download folder is not available on this device.');
         }
 
-        const destination = `${downloadsDir}/${finalName}`;
+        const safeFileName = finalName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+        const destination = `${finalDir}/${safeFileName}`;
+        
         const result = await RNFS.downloadFile({
           fromUrl: item.uri,
           toFile: destination,
-          background: true,
+          background: false, // background: true can cause timeouts on Android
+          readTimeout: 60000,
+          connectionTimeout: 30000,
           discretionary: false,
         }).promise;
 
@@ -566,10 +623,19 @@ const MediaViewer = ({
               </View>
               <View style={styles.previewFrame}>
                 {previewUri ? (
-                  <Image
-                    source={{ uri: previewUri }}
-                    style={styles.previewImage}
-                  />
+                  <>
+                    {previewLoading && (
+                      <View style={styles.previewLoader}>
+                        <ActivityIndicator size="large" color="#fff" />
+                      </View>
+                    )}
+                    <Image
+                      source={{ uri: previewUri }}
+                      style={styles.previewImage}
+                      onLoadStart={() => setPreviewLoading(true)}
+                      onLoadEnd={() => setPreviewLoading(false)}
+                    />
+                  </>
                 ) : null}
               </View>
             </Animated.View>
@@ -748,6 +814,7 @@ const styles = StyleSheet.create({
   },
   listHeaderSn: {
     width: 34,
+    textAlign: 'center',
   },
   listHeaderMedia: {
     flex: 1,
@@ -769,6 +836,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     color: appTheme.colors.neutral.text,
+    textAlign: 'center',
   },
   thumbnailWrap: {
     width: 120,
@@ -930,6 +998,19 @@ const styles = StyleSheet.create({
     right: 16,
     zIndex: 9999,
     elevation: 30,
+  },
+  previewLoader: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  thumbnailLoader: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F5F8FA',
+    zIndex: 1,
   },
   toastOverlay: {
     ...StyleSheet.absoluteFillObject,

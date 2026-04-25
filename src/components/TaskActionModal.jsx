@@ -20,7 +20,6 @@ import {
   StatusBar,
   Animated,
   Dimensions,
-  Pressable
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -79,44 +78,220 @@ const inlineToastStyles = {
 };
 
 const TARGET_VIDEO_MAX_BYTES = 15 * 1024 * 1024;
-const VIDEO_COMPRESSION_STEPS = [720, 540, 480, 360];
+const VIDEO_COMPRESSION_STEPS = [720, 640, 540, 480, 360, 240];
+const MAX_UPLOADABLE_VIDEO_SIZE_BYTES = 100 * 1024 * 1024;
 
 const getFileSizeBytes = async uri => {
   const path = String(uri || '').replace(/^file:\/\//, '');
-  const stats = await RNFS.stat(path);
-  return Number(stats?.size || 0);
-};
-
-const compressVideoForUpload = async videoUri => {
-  let bestResult = {
-    uri: videoUri,
-    sizeBytes: await getFileSizeBytes(videoUri),
-    maxSize: null,
-  };
-
-  for (const maxSize of VIDEO_COMPRESSION_STEPS) {
-    try {
-      const compressedUri = await VideoCompressor.compress(videoUri, {
-        compressionMethod: 'auto',
-        maxSize,
-        minimumFileSizeForCompress: 0,
-      });
-
-      const finalUri = compressedUri || videoUri;
-      const sizeBytes = await getFileSizeBytes(finalUri);
-      const candidate = { uri: finalUri, sizeBytes, maxSize };
-
-      if (sizeBytes < bestResult.sizeBytes) {
-        bestResult = candidate;
-      }
-
-      if (sizeBytes <= TARGET_VIDEO_MAX_BYTES) {
-        return candidate;
-      }
-    } catch {}
+  if (!path) {
+    return 0;
   }
 
-  return bestResult;
+  try {
+    const stats = await RNFS.stat(path);
+    return Number(stats?.size || 0);
+  } catch (error) {
+    console.log('[Video Compression] Unable to read file size for', path, error);
+    return 0;
+  }
+};
+
+const getVideoSourceInfo = source => {
+  const fileSizeBytes = Number(source?.fileSize || source?.sizeBytes || 0);
+  const durationSeconds = Number(source?.duration || 0);
+  const width = Number(source?.width || 0);
+  const height = Number(source?.height || 0);
+
+  return {
+    fileSizeBytes: Number.isFinite(fileSizeBytes) ? fileSizeBytes : 0,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
+    width: Number.isFinite(width) ? width : 0,
+    height: Number.isFinite(height) ? height : 0,
+  };
+};
+
+const compressionAttempts = (sourceInfo) => {
+  const { fileSizeBytes, durationSeconds } = getVideoSourceInfo(sourceInfo);
+  
+  // 100MB+ ya 45 second se lambi file ke liye aggressive compression mode
+  const isVeryLarge = fileSizeBytes > 100 * 1024 * 1024 || durationSeconds > 45;
+
+  const attempts = VIDEO_COMPRESSION_STEPS.map((maxSize, index) => ({
+    maxSize, // Video width/height scaling
+    bitrate: isVeryLarge
+      ? Math.max(120000, 500000 - index * 90000)
+      : Math.max(180000, 800000 - index * 120000),
+  }));
+
+  console.log('[Video Compression] Plan created', {
+    inputSizeMB: (fileSizeBytes / 1048576).toFixed(2),
+    durationSeconds: Number(durationSeconds || 0).toFixed(1),
+    mode: isVeryLarge ? 'aggressive' : 'normal',
+    attempts: attempts.map(item => ({
+      maxSize: item.maxSize,
+      bitrate: item.bitrate,
+    })),
+  });
+
+  return attempts;
+};
+
+const buildVideoTooLargeMessage = sizeBytes => {
+  const sizeMB = (Number(sizeBytes || 0) / 1048576).toFixed(2);
+  const maxMB = (MAX_UPLOADABLE_VIDEO_SIZE_BYTES / 1048576).toFixed(0);
+
+  return (
+    `यह वीडियो ${sizeMB} MB का है, जो अपलोड सीमा से बड़ा है। ` +
+    `कृपया ${maxMB} MB से छोटा वीडियो अपलोड करें ताकि उसे सुरक्षित रूप से compress करके submit किया जा सके।`
+  );
+};
+const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
+  try {
+    let safeUri = videoUri;
+    const sourceDetails = getVideoSourceInfo(sourceInfo);
+
+    if (!safeUri) {
+      throw new Error('चुने गए वीडियो का file path नहीं मिला।');
+    }
+
+    console.log('[Video Compression] Source received', {
+      uri: safeUri,
+      fileSizeMB: (sourceDetails.fileSizeBytes / 1048576).toFixed(2),
+      durationSeconds: Number(sourceDetails.durationSeconds || 0).toFixed(1),
+      width: sourceDetails.width || 0,
+      height: sourceDetails.height || 0,
+    });
+
+    if (videoUri.startsWith('content://')) {
+      try {
+        const stat = await RNFS.stat(videoUri);
+        safeUri = stat.path;
+        console.log('[Video Compression] content:// converted to file path', {
+          originalUri: videoUri,
+          safeUri,
+        });
+      } catch (e) {
+        console.log('[Video Compression] URI conversion failed:', e);
+      }
+    }
+
+    const originalSizeBytes =
+      sourceDetails.fileSizeBytes || (await getFileSizeBytes(safeUri));
+
+    console.log('[Video Compression] Resolved original size', {
+      safeUri,
+      originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
+    });
+
+    if (originalSizeBytes > MAX_UPLOADABLE_VIDEO_SIZE_BYTES) {
+      const message = buildVideoTooLargeMessage(originalSizeBytes);
+      console.log('[Video Compression] Rejecting oversized video', {
+        safeUri,
+        originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
+        maxAllowedMB: (MAX_UPLOADABLE_VIDEO_SIZE_BYTES / 1048576).toFixed(0),
+      });
+      throw new Error(message);
+    }
+
+    if (originalSizeBytes > 0 && originalSizeBytes <= TARGET_VIDEO_MAX_BYTES) {
+      console.log('[Video Compression] Skipping compression; already under target', {
+        targetMB: (TARGET_VIDEO_MAX_BYTES / 1048576).toFixed(2),
+        originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
+      });
+      return {
+        uri: safeUri,
+        sizeBytes: originalSizeBytes,
+        wasCompressed: false,
+        method: 'Original',
+      };
+    }
+
+    console.log(
+      `[Video Compression] Input Size: ${(originalSizeBytes / 1048576).toFixed(2)} MB`,
+    );
+
+    if (sourceDetails.fileSizeBytes > 100 * 1024 * 1024) {
+      console.log(
+        '[Video Compression] Large source detected; using extended compression ladder.',
+      );
+    }
+
+    const attempts = compressionAttempts(sourceDetails);
+    let lastError = null;
+
+    for (const [attemptIndex, attempt] of attempts.entries()) {
+      try {
+        console.log('[Video Compression] Starting attempt', {
+          attemptIndex: attemptIndex + 1,
+          totalAttempts: attempts.length,
+          safeUri,
+          maxSize: attempt.maxSize,
+          bitrate: attempt.bitrate,
+        });
+
+        const compressedUri = await VideoCompressor.compress(safeUri, {
+          compressionMethod: 'manual',
+          maxSize: attempt.maxSize,
+          bitrate: attempt.bitrate,
+          minimumFileSizeForCompress: 0,
+        });
+
+        if (!compressedUri) {
+          throw new Error('Compression ने कोई file return नहीं की।');
+        }
+
+        const finalSizeBytes = await getFileSizeBytes(compressedUri);
+        console.log('[Video Compression] Attempt output', {
+          attemptIndex: attemptIndex + 1,
+          compressedUri,
+          finalSizeMB: (finalSizeBytes / 1048576).toFixed(2),
+        });
+
+        const didShrink =
+          compressedUri !== safeUri &&
+          finalSizeBytes > 0 &&
+          (originalSizeBytes === 0 || finalSizeBytes < originalSizeBytes);
+
+        if (!didShrink) {
+          throw new Error('Compression के बाद file size कम नहीं हुई।');
+        }
+
+        console.log(
+          `[Video Compression] Success! Final Size: ${(finalSizeBytes / 1048576).toFixed(2)} MB`,
+        );
+
+        return {
+          uri: compressedUri,
+          sizeBytes: finalSizeBytes,
+          wasCompressed: true,
+          method: `Aggressive-Manual-${attempt.maxSize}`,
+        };
+      } catch (error) {
+        lastError = error;
+        console.log('[Video Compression] Attempt failed:', {
+          attemptIndex: attemptIndex + 1,
+          maxSize: attempt.maxSize,
+          bitrate: attempt.bitrate,
+          message: error?.message || String(error),
+          nativeStack: error?.nativeStackAndroid || null,
+        });
+      }
+    }
+
+    console.log('[Video Compression] All attempts failed; throwing last error', {
+      safeUri,
+      originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
+      attempts: attempts.length,
+    });
+    throw lastError || new Error('Compression से छोटी file नहीं बन सकी।');
+  } catch (error) {
+    console.log('[Video Compression] Error:', {
+      message: error?.message || String(error),
+      stack: error?.stack || null,
+      nativeStack: error?.nativeStackAndroid || null,
+    });
+    throw error;
+  }
 };
 
 const TaskActionModal = ({
@@ -259,6 +434,15 @@ const TaskActionModal = ({
         return {
           id: id || `${index}`,
           title,
+          taskCategory: String(
+            item.taskCategory || item.TaskCategory || item.category || '',
+          ).trim(),
+          sourceLabel: String(
+            item.sourceLabel || item.sourceType || item.taskSourceLabel || '',
+          ).trim(),
+          sourceKey: String(
+            item.sourceKey || item.taskSourceKey || item.source_key || '',
+          ).trim(),
           priority: String(
             item.priority || item.taskPriority || item.TaskPriority || '',
           ).trim(),
@@ -314,6 +498,15 @@ const TaskActionModal = ({
         return {
           id: id || `${index}`,
           title,
+          taskCategory: String(
+            item.taskCategory || item.TaskCategory || item.category || '',
+          ).trim(),
+          sourceLabel: String(
+            item.sourceLabel || item.sourceType || item.taskSourceLabel || '',
+          ).trim(),
+          sourceKey: String(
+            item.sourceKey || item.taskSourceKey || item.source_key || '',
+          ).trim(),
           description: String(
             item.description ||
               item.Description ||
@@ -491,6 +684,10 @@ const TaskActionModal = ({
                     '',
                 ).trim(),
                 id: taskValue.id || taskValue.key || compositeId,
+                taskCategory: 'Priority',
+                sourceLabel: 'Priority Task',
+                sourceKey: 'priority_task',
+                taskSourceKey: 'priority_task',
                 type: 'Priority',
                 priority: 'high',
                 originalPath: `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}/${groupKey}/${taskKey}`,
@@ -610,6 +807,24 @@ const TaskActionModal = ({
             initialTask.priority ??
               initialTask.taskPriority ??
               initialTask.TaskPriority ??
+              '',
+          ).trim(),
+          taskCategory: String(
+            initialTask.taskCategory ??
+              initialTask.TaskCategory ??
+              initialTask.category ??
+              '',
+          ).trim(),
+          sourceLabel: String(
+            initialTask.sourceLabel ??
+              initialTask.sourceType ??
+              initialTask.taskSourceLabel ??
+              '',
+          ).trim(),
+          sourceKey: String(
+            initialTask.sourceKey ??
+              initialTask.taskSourceKey ??
+              initialTask.source_key ??
               '',
           ).trim(),
           originalPath: initialTask.originalPath || null,
@@ -781,15 +996,68 @@ const TaskActionModal = ({
         ) || { title: selectedTaskParam };
       const taskSourcePath =
         resolvedTask.originalPath || resolvedTask.raw?.originalPath || null;
+      const taskSourceKey = String(
+        resolvedTask.sourceKey ||
+          resolvedTask.taskSourceKey ||
+          resolvedTask.raw?.sourceKey ||
+          resolvedTask.raw?.taskSourceKey ||
+          '',
+      ).trim();
+      const inferredTaskCategory = String(
+        resolvedTask.taskCategory ||
+          resolvedTask.TaskCategory ||
+          resolvedTask.sourceLabel ||
+          resolvedTask.type ||
+          resolvedTask.raw?.taskCategory ||
+          resolvedTask.raw?.TaskCategory ||
+          resolvedTask.raw?.sourceLabel ||
+          '',
+      ).trim();
+      const normalizedTaskCategory = taskSourcePath &&
+        String(taskSourcePath).includes('IECPriorityTasks')
+          ? 'Priority'
+          : taskSourceKey === 'priority_task'
+            ? 'Priority'
+          : inferredTaskCategory || null;
+      const normalizedTaskPriority = normalizedTaskCategory === 'Priority'
+        ? 'high'
+        : String(
+            resolvedTask.priority ||
+              resolvedTask.taskPriority ||
+              resolvedTask.TaskPriority ||
+              '',
+          ).trim() || null;
       const taskWithoutOriginalPath = { ...resolvedTask };
       delete taskWithoutOriginalPath.originalPath;
       delete taskWithoutOriginalPath.raw;
+
+      console.log('[TaskActionModal] Saving task payload', {
+        mode,
+        title: taskWithoutOriginalPath.title,
+        sourcePath: taskSourcePath,
+        sourceKey: taskSourceKey,
+        taskCategory: normalizedTaskCategory,
+        sourceLabel: normalizedTaskCategory === 'Priority' ? 'Priority Task' : normalizedTaskCategory,
+        priority: normalizedTaskPriority,
+        type: normalizedTaskCategory === 'Priority' ? 'priority' : taskWithoutOriginalPath.type,
+      });
 
       await saveTaskSubmission({
         mode,
         selectedTask: {
           ...taskWithoutOriginalPath,
           sourcePath: taskSourcePath,
+          sourceKey: taskSourceKey || (normalizedTaskCategory === 'Priority' ? 'priority_task' : ''),
+          taskCategory: normalizedTaskCategory,
+          category: normalizedTaskCategory,
+          Category: normalizedTaskCategory,
+          sourceLabel: normalizedTaskCategory === 'Priority' ? 'Priority Task' : normalizedTaskCategory,
+          sourceType: normalizedTaskCategory === 'Priority' ? 'Priority Task' : normalizedTaskCategory,
+          priority: normalizedTaskPriority,
+          taskPriority: normalizedTaskPriority,
+          TaskPriority: normalizedTaskPriority,
+          type: normalizedTaskCategory === 'Priority' ? 'priority' : taskWithoutOriginalPath.type,
+          taskType: normalizedTaskCategory === 'Priority' ? 'priority' : taskWithoutOriginalPath.type,
         },
         ward: ward.trim(),
         participants: participants.trim(),
@@ -828,7 +1096,7 @@ const TaskActionModal = ({
 
   const captureVideo = async () => {
     if (videos.length >= 2) {
-      showInlineToast('You can only attach up to 2 videos.', 'warning');
+      showInlineToast('आप केवल 2 वीडियो तक जोड़ सकते हैं।', 'warning');
       return;
     }
     setIsCompressing(true);
@@ -845,9 +1113,20 @@ const TaskActionModal = ({
         return;
       }
 
-      const videoUri = result.assets[0].uri;
-      const compressedVideo = await compressVideoForUpload(videoUri);
-      const finalVideoUri = compressedVideo.uri || videoUri;
+      const activeVideoAsset = result.assets[0] || {};
+      const videoUri = activeVideoAsset.uri;
+      const compressedVideo = await compressVideoForUpload(videoUri, {
+        fileSize: activeVideoAsset.fileSize,
+        duration: activeVideoAsset.duration,
+        width: activeVideoAsset.width,
+        height: activeVideoAsset.height,
+      });
+      const finalVideoUri = compressedVideo.uri;
+      if (!finalVideoUri) {
+        throw new Error(
+          'वीडियो compress नहीं हो पाया। कृपया छोटा वीडियो चुनें।',
+        );
+      }
       const finalVideoSizeBytes =
         compressedVideo.sizeBytes || (await getFileSizeBytes(finalVideoUri));
 
@@ -862,10 +1141,10 @@ const TaskActionModal = ({
         ...prev,
         { uri: finalVideoUri, thumbnailUri, sizeBytes: finalVideoSizeBytes },
       ]);
-    } catch {
+    } catch (err) {
       showAlert({
-        title: 'Video Error',
-        message: 'Video could not be processed. Please try again.',
+        title: 'Video Upload Error',
+        message: err?.message || 'वीडियो process नहीं हो पाया। कृपया दोबारा कोशिश करें।',
       });
     } finally {
       setIsCompressing(false);

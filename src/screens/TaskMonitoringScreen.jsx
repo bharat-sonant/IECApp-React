@@ -8,6 +8,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  ActivityIndicator
 } from 'react-native';
 import {
   SafeAreaView,
@@ -126,6 +127,7 @@ const TaskMonitoringScreen = ({ navigation }) => {
     moveCalendarMonth,
     moveCalendarYear,
     loadTasks,
+    loading,
   } = useTaskMonitoring();
 
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -376,6 +378,11 @@ const TaskMonitoringScreen = ({ navigation }) => {
               ]}
               ItemSeparatorComponent={ListSeparator}
             />
+          ) : loading ? (
+            <View style={styles.emptyState}>
+              <ActivityIndicator size="large" color={appTheme.colors.brand.primary} />
+              <Text style={[styles.emptyText, { marginTop: 12 }]}>Loading tasks...</Text>
+            </View>
           ) : (
             <View style={styles.emptyState}>
               <MaterialCommunityIcons

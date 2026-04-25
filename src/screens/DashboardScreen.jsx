@@ -239,7 +239,13 @@ const resolveTaskCategory = task => {
     task?.Category,
   ).toLowerCase();
 
-  if (!raw) return 'Other';
+  if (!raw) {
+    // Fallback to sourceLabel
+    const sourceLabel = getFirstText(task?.sourceLabel).toLowerCase();
+    if (sourceLabel === 'priority') return 'Priority';
+    if (sourceLabel === 'kpi') return 'KPI';
+    return 'Other';
+  }
   if (raw.includes('kpi')) return 'KPI';
   if (raw.includes('priority')) return 'Priority';
   return 'Other';
@@ -525,7 +531,7 @@ const mergeDashboardTask = (existing, incoming) => {
 
   const preferred =
     incomingRank > existingRank ||
-    (incomingRank === existingRank && incomingTime >= existingTime)
+      (incomingRank === existingRank && incomingTime >= existingTime)
       ? { ...existing, ...incoming }
       : { ...incoming, ...existing };
 
@@ -714,8 +720,8 @@ const flattenTaskNode = (
 
     const entries = Array.isArray(node)
       ? node
-          .map((item, index) => [String(index), item])
-          .filter(([, item]) => item !== null && item !== undefined)
+        .map((item, index) => [String(index), item])
+        .filter(([, item]) => item !== null && item !== undefined)
       : isPlainObject(node)
         ? Object.entries(node)
         : [];
@@ -772,7 +778,9 @@ const flattenTaskNode = (
           const status = resolveTaskStatus(item);
           const priority = resolveTaskPriority(item);
           const type = buildTaskType(item, fallbackType);
-          const taskCategory = resolveTaskCategory(item) || sourceLabel;
+          const taskCategory = sourceLabel === 'Priority' ? 'Priority' :
+            sourceLabel === 'KPI' ? 'KPI' :
+              resolveTaskCategory(item) || sourceLabel;
           const hasApprovalMeta = Boolean(
             getFirstText(
               item?.approvedBy,
@@ -1098,7 +1106,7 @@ const DashboardScreen = ({ navigation }) => {
     };
   }, [tasks]);
 
-  useEffect(() => {}, [tasks]);
+  useEffect(() => { }, [tasks]);
 
   useEffect(() => {
     let isActive = true;
@@ -1125,9 +1133,9 @@ const DashboardScreen = ({ navigation }) => {
         setEmployeeName(resolvedName);
         setLoginId(
           session.loginId ||
-            session.employee?.userId ||
-            session.employee?.id ||
-            '',
+          session.employee?.userId ||
+          session.employee?.id ||
+          '',
         );
         console.log('[Dashboard] session hydrated', {
           loginId: session.loginId || session.employee?.userId || session.employee?.id || '',
@@ -1198,7 +1206,7 @@ const DashboardScreen = ({ navigation }) => {
 
         // 2. Load Catalog (with its own cache)
         let taskCatalog = (await readTaskCatalogCache()) || {};
-        
+
         const [kpiResult, priorityResult, currentResult] =
           await Promise.all([
             readFirstExistingPath(kpiPaths),
@@ -1355,7 +1363,7 @@ const DashboardScreen = ({ navigation }) => {
       if (handled === 'true') {
         batteryPromptCheckedRef.current = true;
         setBatteryPromptChecked(true);
-        
+
         // Even if handled, we still want to ensure tracking starts if exempt
         const isExempt = await isIgnoringBatteryOptimizations();
         if (isExempt) {
@@ -1512,9 +1520,11 @@ const DashboardScreen = ({ navigation }) => {
   const handleAddTask = mode => {
     console.log('[Dashboard] add task requested', { mode });
     setFabOpen(false);
-    setActionModalTask(null);
-    setActionModalMode(mode);
-    setActionModalVisible(true);
+    runAfterGesture(() => {
+      setActionModalTask(null);
+      setActionModalMode(mode);
+      setActionModalVisible(true);
+    });
   };
 
   const renderTask = ({ item }) => {
@@ -1585,7 +1595,7 @@ const DashboardScreen = ({ navigation }) => {
             </Text>
           </View>
 
-          {!!getCompletionDisplayValue(item) && (
+          {item.status !== 'Pending' && !!getCompletionDisplayValue(item) && (
             <Text style={styles.taskDateRight}>
               {formatCompletionDate(getCompletionDisplayValue(item))}
             </Text>
@@ -1621,7 +1631,7 @@ const DashboardScreen = ({ navigation }) => {
       {/* Close FAB menu when touching outside via absolute fill instead of wrapping */}
       {fabOpen && (
         <Pressable
-          style={styles.overlayBlocker}
+          style={[styles.overlayBlocker, { zIndex: 10, elevation: 10 }]}
           onPress={() => setFabOpen(false)}
         />
       )}
@@ -1716,10 +1726,17 @@ const DashboardScreen = ({ navigation }) => {
 
         {/* FAB BUTTON */}
         <View
-          style={[styles.fabWrap, { bottom: Math.max(insets.bottom + 16, 16) }]}
+          style={[
+            styles.fabWrap,
+            {
+              bottom: Math.max(insets.bottom + 16, 16),
+              zIndex: 20,
+              elevation: 20,
+            },
+          ]}
         >
           {fabOpen && (
-            <View style={styles.fabMenuPanel}>
+            <View style={[styles.fabMenuPanel, { zIndex: 21, elevation: 21 }]}>
               <TouchableOpacity
                 style={styles.fabPanelItem}
                 onPress={() => handleAddTask('add_kpi')}
@@ -1795,7 +1812,7 @@ const DashboardScreen = ({ navigation }) => {
             ]}
           >
             <Pressable
-            onPress={() => {
+              onPress={() => {
                 runAfterGesture(() => {
                   console.log('[Dashboard] navigating to TaskMonitoring');
                   setMenuOpen(false);
