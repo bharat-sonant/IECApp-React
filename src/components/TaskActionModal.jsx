@@ -38,7 +38,6 @@ import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
 import { saveTaskSubmission } from '../services/taskService';
 import { beginAppStateSuppression } from '../services/appStateGuard';
-import { readDashboardTaskCache } from '../services/taskCacheService';
 
 const inlineToastStyles = {
   warning: {
@@ -367,8 +366,34 @@ const TaskActionModal = ({
     return catalogStatus === '1';
   };
 
+  const dedupeTaskOptions = options => {
+    const seen = new Set();
+    return (Array.isArray(options) ? options : []).filter(item => {
+      if (!item || typeof item !== 'object') {
+        return false;
+      }
+
+      const title = String(item.title || '').trim().toLowerCase();
+      const taskId = String(item.taskId || item.id || '').trim().toLowerCase();
+      const originalPath = String(item.originalPath || '').trim().toLowerCase();
+      const signature = taskId || originalPath || title;
+
+      if (!signature) {
+        return false;
+      }
+
+      if (seen.has(signature)) {
+        return false;
+      }
+
+      seen.add(signature);
+      return true;
+    });
+  };
+
   const normalizedTaskOptions = useMemo(() => {
-    return (Array.isArray(taskChoices) ? taskChoices : [])
+    return dedupeTaskOptions(
+      (Array.isArray(taskChoices) ? taskChoices : [])
       .map((item, index) => {
         if (!item) {
           return null;
@@ -433,11 +458,13 @@ const TaskActionModal = ({
         };
       })
       .filter(Boolean)
-      .filter(isVisibleTaskRecord);
+      .filter(isVisibleTaskRecord),
+    );
   }, [taskChoices]);
 
   const pickTaskOptions = useMemo(() => {
-    return (Array.isArray(taskOptions) ? taskOptions : [])
+    return dedupeTaskOptions(
+      (Array.isArray(taskOptions) ? taskOptions : [])
       .map((item, index) => {
         if (!item) {
           return null;
@@ -502,7 +529,8 @@ const TaskActionModal = ({
         };
       })
       .filter(Boolean)
-      .filter(isVisibleTaskRecord);
+      .filter(isVisibleTaskRecord),
+    );
   }, [taskOptions]);
 
   const buildTaskChoices = useCallback(async () => {
@@ -572,12 +600,6 @@ const TaskActionModal = ({
         item?.key ??
         '',
       ).trim();
-
-    const normalizeLookupText = value =>
-      String(value ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, ' ');
 
     const resolveTaskTitle = item =>
       String(
@@ -763,199 +785,15 @@ const TaskActionModal = ({
       });
     };
 
-    const buildTaskCatalogIndex = catalogPayload => {
-      const index = {};
-
-      const visit = (node, trail = []) => {
-        if (node === null || node === undefined) {
-          return;
-        }
-
-        if (Array.isArray(node)) {
-          node.forEach((item, idx) => visit(item, [...trail, String(idx)]));
-          return;
-        }
-
-        if (typeof node !== 'object') {
-          return;
-        }
-
-        const taskId = getTaskIdCandidate(node);
-        if (taskId) {
-          index[taskId] = node;
-        }
-
-        const titleCandidates = [
-          node.title,
-          node.Title,
-          node.name,
-          node.Name,
-          node.taskName,
-          node.TaskName,
-          node.label,
-          node.Label,
-        ]
-          .map(normalizeLookupText)
-          .filter(Boolean);
-
-        titleCandidates.forEach(titleKey => {
-          if (!index[titleKey]) {
-            index[titleKey] = node;
-          }
-        });
-
-        const directKeys = [
-          node.id,
-          node.key,
-          node.taskId,
-          node.TaskId,
-          trail[trail.length - 1],
-        ]
-          .map(value => String(value ?? '').trim())
-          .filter(Boolean);
-
-        directKeys.forEach(key => {
-          if (!index[key]) {
-            index[key] = node;
-          }
-        });
-
-        Object.entries(node).forEach(([key, value]) => {
-          if (key === 'lastKey') {
-            return;
-          }
-          visit(value, [...trail, key]);
-        });
-      };
-
-      visit(catalogPayload);
-      return index;
-    };
-
-    const resolveTaskStateFromCatalog = (task, catalogIndex) => {
-      const taskId = getTaskIdCandidate(task);
-      const catalogTask = (taskId && catalogIndex?.[taskId]) || null;
-      const sourceState = getTaskState(task);
-      const catalogStatus = String(
-        catalogTask?.status ?? catalogTask?.Status ?? '',
-      ).trim();
-      const catalogIsDeleted = String(
-        catalogTask?.isDeleted ?? catalogTask?.IsDeleted ?? '',
-      ).trim().toLowerCase();
-      const catalogVisible =
-        !catalogTask ||
-        (catalogIsDeleted !== 'yes' && catalogStatus === '1');
-      const sourceVisible = !sourceState.hasState || sourceState.isActive;
-
-      return {
-        taskId,
-        catalogTask,
-        state: sourceState,
-        visible: catalogVisible && sourceVisible,
-      };
-    };
-
-    const getCurrentDateParts = () => {
-      const now = new Date();
-      const month = String(now.getMonth() + 1).padStart(2, '0');
-      const day = String(now.getDate()).padStart(2, '0');
-      const currentDate = `${now.getFullYear()}-${month}-${day}`;
-      return { currentDate };
-    };
-
     if (mode === 'add_kpi') {
-      const dateParts = getCurrentDateParts();
-      const dashboardCache = await readDashboardTaskCache(userId, dateParts.currentDate);
-      if (Array.isArray(dashboardCache?.tasks) && dashboardCache.tasks.length > 0) {
-        return dashboardCache.tasks
-          .map((task, index) => {
-            if (!task) {
-              return null;
-            }
-
-            const title = String(
-              task.title ||
-              task.name ||
-              task.taskName ||
-              task.TaskName ||
-              task.label ||
-              '',
-            ).trim();
-
-            if (!title) {
-              return null;
-            }
-
-            return {
-              ...task,
-              id: String(
-                task.id ||
-                task.key ||
-                task.taskId ||
-                task.TaskId ||
-                index,
-              ).trim(),
-              taskId: String(
-                task.taskId || task.TaskId || task.resolvedTaskId || '',
-              ).trim(),
-              title,
-              description: String(
-                task.description ||
-                task.Description ||
-                task.desc ||
-                task.Desc ||
-                task.details ||
-                task.Details ||
-                task.remarks ||
-                task.Remarks ||
-                task.remark ||
-                task.Remark ||
-                task.taskDesc ||
-                task.TaskDesc ||
-                task.TaskDetails ||
-                '',
-              ).trim(),
-              taskCategory: String(
-                task.taskCategory || task.TaskCategory || task.category || task.Category || '',
-              ).trim(),
-              sourceLabel: String(
-                task.sourceLabel || task.sourceType || task.taskSourceLabel || '',
-              ).trim(),
-              sourceKey: String(
-                task.sourceKey || task.taskSourceKey || task.source_key || '',
-              ).trim(),
-              taskSourceKey: String(
-                task.taskSourceKey || task.sourceKey || task.source_key || '',
-              ).trim(),
-              priority: String(
-                task.priority || task.taskPriority || task.TaskPriority || '',
-              ).trim(),
-              type: String(
-                task.type || task.taskType || task.TaskType || '',
-              ).trim(),
-              originalPath: task.originalPath || task.raw?.originalPath || null,
-              catalogTask: task.catalogTask || null,
-              raw: task.raw || task,
-            };
-          })
-          .filter(Boolean)
-          .filter(isVisibleTaskRecord);
-      }
-
       const kpiPayload = await getData(`IECData/IECKPITasks/${userId}`);
-      const priorityPayload = await getData(
-        `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}`,
-      );
-      const allTaskPayload = await getData('IECData/Tasks');
-      const taskCatalogIndex = buildTaskCatalogIndex(allTaskPayload);
-
       const choices = [];
 
       if (Array.isArray(kpiPayload)) {
         kpiPayload.forEach((item, index) => {
           if (item && typeof item === 'object') {
-            const taskState = resolveTaskStateFromCatalog(item, taskCatalogIndex);
-            if (!taskState.visible) {
+            const taskState = getTaskState(item);
+            if (taskState.hasState && !taskState.isActive) {
               return;
             }
             pushUnique(choices, {
@@ -984,8 +822,8 @@ const TaskActionModal = ({
       } else if (kpiPayload && typeof kpiPayload === 'object') {
         Object.entries(kpiPayload).forEach(([key, value]) => {
           if (value && typeof value === 'object') {
-            const taskState = resolveTaskStateFromCatalog(value, taskCatalogIndex);
-            if (!taskState.visible) {
+            const taskState = getTaskState(value);
+            if (taskState.hasState && !taskState.isActive) {
               return;
             }
             pushUnique(choices, {
@@ -1013,51 +851,7 @@ const TaskActionModal = ({
         });
       }
 
-      if (priorityPayload && typeof priorityPayload === 'object') {
-        Object.entries(priorityPayload).forEach(([groupKey, groupValue]) => {
-          if (!groupValue || typeof groupValue !== 'object') {
-            return;
-          }
-
-          Object.entries(groupValue).forEach(([taskKey, taskValue]) => {
-            if (taskKey === 'lastKey') {
-              return;
-            }
-
-            if (taskValue && typeof taskValue === 'object') {
-              const taskState = resolveTaskStateFromCatalog(taskValue, taskCatalogIndex);
-              if (!taskState.visible) {
-                return;
-              }
-
-              const compositeId = `${groupKey}/${taskKey}`;
-              pushUnique(choices, {
-                ...taskValue,
-                title: String(
-                  taskValue.task ||
-                  taskValue.name ||
-                  taskValue.title ||
-                  taskValue.desc ||
-                  taskValue.description ||
-                  '',
-                ).trim(),
-                id: taskValue.id || taskValue.key || taskValue.taskId || taskValue.TaskId || compositeId,
-                taskId: getTaskIdCandidate(taskValue) || null,
-                taskCategory: 'Priority',
-                sourceLabel: 'Priority Task',
-                sourceKey: 'priority_task',
-                taskSourceKey: 'priority_task',
-                type: 'Priority',
-                priority: 'high',
-                originalPath: `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}/${groupKey}/${taskKey}`,
-                catalogTask: taskState.catalogTask || null,
-              });
-            }
-          });
-        });
-      }
-
-      return choices;
+      return dedupeTaskOptions(choices);
     }
 
     if (mode === 'add_other') {
@@ -1066,7 +860,7 @@ const TaskActionModal = ({
 
       collectOtherTaskChoices(choices, payload);
 
-      return choices;
+      return dedupeTaskOptions(choices);
     }
 
     return [];
@@ -1259,6 +1053,15 @@ const TaskActionModal = ({
       return;
     }
 
+    if (!images.length) {
+      setFieldErrors(prev => ({ ...prev, images: true }));
+      showInlineToast(
+        'Please capture at least one image before submitting.',
+        'warning',
+      );
+      return;
+    }
+
     setIsSaving(true);
     let capturedLocation = {
       latitude: 0,
@@ -1371,6 +1174,7 @@ const TaskActionModal = ({
 
   const onPictureTaken = uri => {
     setImages(prev => [...prev, uri]);
+    setFieldErrors(prev => ({ ...prev, images: false }));
   };
 
   const captureVideo = async () => {
@@ -1662,6 +1466,12 @@ const TaskActionModal = ({
                       <Text style={styles.mediaCount}>{images.length} / 5</Text>
                     </View>
 
+                    {fieldErrors.images ? (
+                      <Text style={styles.mediaErrorText}>
+                        At least one photo is required.
+                      </Text>
+                    ) : null}
+
                     <View style={styles.mediaGrid}>
                       {images.length < 5 && (
                         <TouchableOpacity
@@ -1680,7 +1490,7 @@ const TaskActionModal = ({
 
                       {images.map((imgUri, index) => (
                         <TouchableOpacity
-                          key={index}
+                          key={`image-preview-${index}`}
                           style={styles.previewCard}
                           activeOpacity={0.8}
                           onPress={() => setPreviewImage(imgUri)}
@@ -1749,7 +1559,7 @@ const TaskActionModal = ({
                       )}
 
                       {videos.map((videoItem, index) => (
-                        <View key={index} style={styles.previewCard}>
+                        <View key={`video-preview-${index}`} style={styles.previewCard}>
                           {videoItem.thumbnailUri ? (
                             <Image
                               source={{ uri: videoItem.thumbnailUri }}
@@ -2344,6 +2154,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     fontWeight: '500',
+  },
+  mediaErrorText: {
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
   },
   mediaCount: {
     fontSize: 12,

@@ -179,8 +179,6 @@ const TaskMonitoringScreen = ({ navigation }) => {
 
   const renderTask = ({ item }) => {
     const status = STATUS_META[item.status] ?? STATUS_META.Pending;
-    const isActionable =
-      item.status === 'Pending' || item.status === 'Not Approved';
     const priorityText = item.type
       ? String(item.type).charAt(0).toUpperCase() +
         String(item.type).slice(1).toLowerCase()
@@ -235,18 +233,16 @@ const TaskMonitoringScreen = ({ navigation }) => {
               {status.label}
             </Text>
           </View>
-          {isActionable ? (
-            <View style={styles.mediaChip}>
-              <MaterialCommunityIcons
-                name="camera-burst"
-                size={14}
-                color={appTheme.colors.neutral.textMuted}
-              />
-              <Text style={styles.mediaText}>
-                {item.images} photos, {item.videos} videos
-              </Text>
-            </View>
-          ) : null}
+          <View style={styles.mediaChip}>
+            <MaterialCommunityIcons
+              name="camera-burst"
+              size={14}
+              color={appTheme.colors.neutral.textMuted}
+            />
+            <Text style={styles.mediaText}>
+              {item.images} photos, {item.videos} videos
+            </Text>
+          </View>
         </View>
       </Pressable>
     );
