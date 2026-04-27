@@ -15,6 +15,22 @@ class OtaPackageInstaller(reactContext: ReactApplicationContext) : ReactContextB
 
     override fun getName(): String = "OtaPackageInstaller"
 
+    private fun recordInstalledVersion() {
+        val context = reactApplicationContext
+        val appVersion = try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        } catch (_: Exception) {
+            null
+        }
+
+        if (!appVersion.isNullOrBlank()) {
+            context.getSharedPreferences("ota_bundle_meta", Context.MODE_PRIVATE)
+                .edit()
+                .putString("installed_for_app_version", appVersion)
+                .apply()
+        }
+    }
+
     @ReactMethod
     fun install(zipPath: String, promise: Promise) {
         try {
@@ -53,10 +69,21 @@ class OtaPackageInstaller(reactContext: ReactApplicationContext) : ReactContextB
             zipIn.close()
 
             zipFile.delete()
+            recordInstalledVersion()
 
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("INSTALL_FAILED", "Failed to install OTA package: ${e.message}", e)
+        }
+    }
+
+    @ReactMethod
+    fun recordInstalledBundleVersion(promise: Promise) {
+        try {
+            recordInstalledVersion()
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("RECORD_FAILED", "Failed to record OTA bundle version: ${e.message}", e)
         }
     }
 }

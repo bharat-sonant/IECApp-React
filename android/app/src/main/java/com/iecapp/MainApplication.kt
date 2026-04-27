@@ -1,6 +1,7 @@
 package com.iecapp
 
 import android.app.Application
+import android.content.Context
 import java.io.File
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -15,11 +16,24 @@ class MainApplication : Application(), ReactApplication {
 
   override val reactHost: ReactHost by lazy {
     val installedBundle = File(applicationContext.filesDir, "index.android.bundle")
-    val jsBundleFilePath = if (installedBundle.exists()) {
-      installedBundle.absolutePath
-    } else {
+    val sharedPrefs = applicationContext.getSharedPreferences("ota_bundle_meta", Context.MODE_PRIVATE)
+    val storedAppVersion = sharedPrefs.getString("installed_for_app_version", null)
+    val currentAppVersion = try {
+      packageManager.getPackageInfo(packageName, 0).versionName
+    } catch (_: Exception) {
       null
     }
+
+    val jsBundleFilePath =
+      if (installedBundle.exists() && !storedAppVersion.isNullOrBlank() && storedAppVersion == currentAppVersion) {
+        installedBundle.absolutePath
+      } else {
+        if (installedBundle.exists() && storedAppVersion != currentAppVersion) {
+          installedBundle.delete()
+        }
+        sharedPrefs.edit().remove("installed_for_app_version").apply()
+        null
+      }
 
     getDefaultReactHost(
       context = applicationContext,
