@@ -1721,7 +1721,7 @@ const DashboardScreen = ({ navigation }) => {
                   </Text>
                   <Text style={styles.emptySubtitle}>
                     {tasksError ||
-                      'Your assigned tasks will appear here once they are available.'}
+                      'Your assigned tasks will appear here once they are available'}
                   </Text>
                 </View>
               ) : null
