@@ -1504,7 +1504,7 @@ const DashboardScreen = ({ navigation }) => {
           text: 'Yes',
           onPress: async () => {
             runAfterGesture(async () => {
-              stopTracking();
+              await stopTracking();
               await clearLoginSession();
               await clearSharedMediaFiles();
               await clearMediaCache();
@@ -1721,7 +1721,7 @@ const DashboardScreen = ({ navigation }) => {
                   </Text>
                   <Text style={styles.emptySubtitle}>
                     {tasksError ||
-                      'Your assigned tasks will appear here once they are available'}
+                      'Your assigned tasks will appear here once they are available.'}
                   </Text>
                 </View>
               ) : null

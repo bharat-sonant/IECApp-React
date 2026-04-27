@@ -85,10 +85,11 @@ export const LocationProvider = ({ children }) => {
       // start native tracking - listeners are already listening
       startLocationTracking();
 
-      stopTrackingRef.current = () => {
+      stopTrackingRef.current = async () => {
+        stopLocationTracking();
+        await flushPendingLocationSnapshots();
         unsubLocation();
         unsubSnapshots();
-        stopLocationTracking();
       };
 
       return true;
@@ -103,12 +104,13 @@ export const LocationProvider = ({ children }) => {
   }, []);
 
   // Stop tracking (call on logout)
-  const stopTracking = useCallback(() => {
+  const stopTracking = useCallback(async () => {
     if (stopTrackingRef.current) {
-      stopTrackingRef.current();
+      await stopTrackingRef.current();
       stopTrackingRef.current = null;
     } else {
       stopLocationTracking();
+      await flushPendingLocationSnapshots();
     }
     isStartingRef.current = false;
     isTrackingRef.current = false;
