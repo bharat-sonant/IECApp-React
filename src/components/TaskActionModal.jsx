@@ -1458,7 +1458,7 @@ const TaskActionModal = ({
                   <View style={styles.mediaSection}>
                     <View style={styles.mediaHeaderRow}>
                       <View>
-                        <Text style={styles.mediaTitle}>Task Photos</Text>
+                        <Text style={styles.mediaTitle}>Task Photos * (1 required)</Text>
                         <Text style={styles.mediaSubtitle}>
                           Take clear pictures of the work
                         </Text>
