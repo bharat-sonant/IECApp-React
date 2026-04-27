@@ -75,13 +75,8 @@ export const startUserLocationTracking = async () => {
 
     await nativeRequestIgnoreBatteryOptimizations();
     nativeStartLocationTracking();
-    console.log('[LocationService] Tracking started for employee:', empId);
     return { success: true, empId };
   } catch (error) {
-    console.log(
-      '[LocationService] Failed to start tracking:',
-      error?.message || error,
-    );
     return { success: false, error: error?.message || error };
   }
 };
@@ -92,13 +87,8 @@ export const startUserLocationTracking = async () => {
 export const stopUserLocationTracking = () => {
   try {
     nativeStopLocationTracking();
-    console.log('[LocationService] Tracking stopped');
     return { success: true };
   } catch (error) {
-    console.log(
-      '[LocationService] Failed to stop tracking:',
-      error?.message || error,
-    );
     return { success: false, error: error?.message || error };
   }
 };
@@ -168,7 +158,6 @@ export const getUserCurrentLocation = async () => {
         address = locality.trim();
       }
     } catch (geocodeError) {
-      console.log('[LocationService] Geocoding failed:', geocodeError?.message);
     }
 
     const result = {
@@ -185,10 +174,6 @@ export const getUserCurrentLocation = async () => {
 
     return { success: true, location: result };
   } catch (error) {
-    console.log(
-      '[LocationService] getUserCurrentLocation error:',
-      error?.message,
-    );
     return { success: false, error: error?.message || error };
   }
 };
@@ -236,10 +221,6 @@ export const saveLocationSnapshot = async ({
       normalizedPath &&
       snapshotSignature === lastSavedSnapshotSignature
     ) {
-      console.log('[LocationService] Skipping duplicate stationary snapshot', {
-        locationPath,
-        pathString: normalizedPath,
-      });
       return { success: true, skipped: true };
     }
 
@@ -261,13 +242,8 @@ export const saveLocationSnapshot = async ({
     });
 
     lastSavedSnapshotSignature = snapshotSignature;
-    console.log('[LocationService] Snapshot saved:', locationPath);
     return { success: true };
   } catch (error) {
-    console.log(
-      '[LocationService] Failed to save snapshot:',
-      error?.message || error,
-    );
     return { success: false, error: error?.message || error };
   }
 };
@@ -282,12 +258,6 @@ export const flushPendingLocationSnapshots = async () => {
       return { success: true, flushed: 0 };
     }
 
-    console.log(
-      '[LocationService] Flushing',
-      snapshots.length,
-      'pending snapshots',
-    );
-
     for (const snapshot of snapshots) {
       await saveLocationSnapshot({
         pathString: snapshot.path,
@@ -299,10 +269,8 @@ export const flushPendingLocationSnapshots = async () => {
     }
 
     await clearPendingSnapshots();
-    console.log('[LocationService] Flushed', snapshots.length, 'snapshots');
     return { success: true, flushed: snapshots.length };
   } catch (error) {
-    console.log('[LocationService] Flush failed:', error?.message || error);
     return { success: false, error: error?.message || error };
   }
 };

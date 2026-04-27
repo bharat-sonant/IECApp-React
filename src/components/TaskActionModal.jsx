@@ -29,6 +29,7 @@ import {
   createVideoThumbnail,
 } from 'react-native-compressor';
 import TaskDetailModal from './TaskDetailModal';
+import CommonLoader from './CommonLoader';
 import RNFS from 'react-native-fs';
 import appTheme from '../theme/appTheme';
 import ReusableCamera from './ReusableCamera';
@@ -37,6 +38,7 @@ import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
 import { saveTaskSubmission } from '../services/taskService';
 import { beginAppStateSuppression } from '../services/appStateGuard';
+import { readDashboardTaskCache } from '../services/taskCacheService';
 
 const inlineToastStyles = {
   warning: {
@@ -91,7 +93,6 @@ const getFileSizeBytes = async uri => {
     const stats = await RNFS.stat(path);
     return Number(stats?.size || 0);
   } catch (error) {
-    console.log('[Video Compression] Unable to read file size for', path, error);
     return 0;
   }
 };
@@ -112,7 +113,7 @@ const getVideoSourceInfo = source => {
 
 const compressionAttempts = (sourceInfo) => {
   const { fileSizeBytes, durationSeconds } = getVideoSourceInfo(sourceInfo);
-  
+
   // 100MB+ ya 45 second se lambi file ke liye aggressive compression mode
   const isVeryLarge = fileSizeBytes > 100 * 1024 * 1024 || durationSeconds > 45;
 
@@ -122,16 +123,6 @@ const compressionAttempts = (sourceInfo) => {
       ? Math.max(120000, 500000 - index * 90000)
       : Math.max(180000, 800000 - index * 120000),
   }));
-
-  console.log('[Video Compression] Plan created', {
-    inputSizeMB: (fileSizeBytes / 1048576).toFixed(2),
-    durationSeconds: Number(durationSeconds || 0).toFixed(1),
-    mode: isVeryLarge ? 'aggressive' : 'normal',
-    attempts: attempts.map(item => ({
-      maxSize: item.maxSize,
-      bitrate: item.bitrate,
-    })),
-  });
 
   return attempts;
 };
@@ -154,50 +145,23 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
       throw new Error('चुने गए वीडियो का file path नहीं मिला।');
     }
 
-    console.log('[Video Compression] Source received', {
-      uri: safeUri,
-      fileSizeMB: (sourceDetails.fileSizeBytes / 1048576).toFixed(2),
-      durationSeconds: Number(sourceDetails.durationSeconds || 0).toFixed(1),
-      width: sourceDetails.width || 0,
-      height: sourceDetails.height || 0,
-    });
-
     if (videoUri.startsWith('content://')) {
       try {
         const stat = await RNFS.stat(videoUri);
         safeUri = stat.path;
-        console.log('[Video Compression] content:// converted to file path', {
-          originalUri: videoUri,
-          safeUri,
-        });
       } catch (e) {
-        console.log('[Video Compression] URI conversion failed:', e);
       }
     }
 
     const originalSizeBytes =
       sourceDetails.fileSizeBytes || (await getFileSizeBytes(safeUri));
 
-    console.log('[Video Compression] Resolved original size', {
-      safeUri,
-      originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
-    });
-
     if (originalSizeBytes > MAX_UPLOADABLE_VIDEO_SIZE_BYTES) {
       const message = buildVideoTooLargeMessage(originalSizeBytes);
-      console.log('[Video Compression] Rejecting oversized video', {
-        safeUri,
-        originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
-        maxAllowedMB: (MAX_UPLOADABLE_VIDEO_SIZE_BYTES / 1048576).toFixed(0),
-      });
       throw new Error(message);
     }
 
     if (originalSizeBytes > 0 && originalSizeBytes <= TARGET_VIDEO_MAX_BYTES) {
-      console.log('[Video Compression] Skipping compression; already under target', {
-        targetMB: (TARGET_VIDEO_MAX_BYTES / 1048576).toFixed(2),
-        originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
-      });
       return {
         uri: safeUri,
         sizeBytes: originalSizeBytes,
@@ -206,28 +170,14 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
       };
     }
 
-    console.log(
-      `[Video Compression] Input Size: ${(originalSizeBytes / 1048576).toFixed(2)} MB`,
-    );
-
     if (sourceDetails.fileSizeBytes > 100 * 1024 * 1024) {
-      console.log(
-        '[Video Compression] Large source detected; using extended compression ladder.',
-      );
     }
 
     const attempts = compressionAttempts(sourceDetails);
     let lastError = null;
 
-    for (const [attemptIndex, attempt] of attempts.entries()) {
+    for (const attempt of attempts) {
       try {
-        console.log('[Video Compression] Starting attempt', {
-          attemptIndex: attemptIndex + 1,
-          totalAttempts: attempts.length,
-          safeUri,
-          maxSize: attempt.maxSize,
-          bitrate: attempt.bitrate,
-        });
 
         const compressedUri = await VideoCompressor.compress(safeUri, {
           compressionMethod: 'manual',
@@ -241,11 +191,6 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
         }
 
         const finalSizeBytes = await getFileSizeBytes(compressedUri);
-        console.log('[Video Compression] Attempt output', {
-          attemptIndex: attemptIndex + 1,
-          compressedUri,
-          finalSizeMB: (finalSizeBytes / 1048576).toFixed(2),
-        });
 
         const didShrink =
           compressedUri !== safeUri &&
@@ -256,10 +201,6 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
           throw new Error('Compression के बाद file size कम नहीं हुई।');
         }
 
-        console.log(
-          `[Video Compression] Success! Final Size: ${(finalSizeBytes / 1048576).toFixed(2)} MB`,
-        );
-
         return {
           uri: compressedUri,
           sizeBytes: finalSizeBytes,
@@ -268,28 +209,10 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
         };
       } catch (error) {
         lastError = error;
-        console.log('[Video Compression] Attempt failed:', {
-          attemptIndex: attemptIndex + 1,
-          maxSize: attempt.maxSize,
-          bitrate: attempt.bitrate,
-          message: error?.message || String(error),
-          nativeStack: error?.nativeStackAndroid || null,
-        });
       }
     }
-
-    console.log('[Video Compression] All attempts failed; throwing last error', {
-      safeUri,
-      originalSizeMB: (originalSizeBytes / 1048576).toFixed(2),
-      attempts: attempts.length,
-    });
     throw lastError || new Error('Compression से छोटी file नहीं बन सकी।');
   } catch (error) {
-    console.log('[Video Compression] Error:', {
-      message: error?.message || String(error),
-      stack: error?.stack || null,
-      nativeStack: error?.nativeStackAndroid || null,
-    });
     throw error;
   }
 };
@@ -408,6 +331,42 @@ const TaskActionModal = ({
     }, 2200);
   };
 
+  const isVisibleTaskRecord = task => {
+    if (!task || typeof task !== 'object') {
+      return true;
+    }
+
+    const catalogTask =
+      (task.catalogTask && typeof task.catalogTask === 'object'
+        ? task.catalogTask
+        : null) ||
+      (task.raw?.catalogTask && typeof task.raw.catalogTask === 'object'
+        ? task.raw.catalogTask
+        : null);
+
+    if (!catalogTask) {
+      return true;
+    }
+
+    const isDeleted = String(
+      catalogTask?.isDeleted ??
+      catalogTask?.IsDeleted ??
+      '',
+    ).toLowerCase();
+
+    if (isDeleted === 'yes') {
+      return false;
+    }
+
+    const catalogStatus = String(
+      catalogTask?.status ??
+      catalogTask?.Status ??
+      '',
+    ).trim();
+
+    return catalogStatus === '1';
+  };
+
   const normalizedTaskOptions = useMemo(() => {
     return (Array.isArray(taskChoices) ? taskChoices : [])
       .map((item, index) => {
@@ -417,11 +376,11 @@ const TaskActionModal = ({
 
         const title = String(
           item.title ||
-            item.name ||
-            item.taskName ||
-            item.TaskName ||
-            item.label ||
-            '',
+          item.name ||
+          item.taskName ||
+          item.TaskName ||
+          item.label ||
+          '',
         ).trim();
         const id = String(
           item.id || item.key || item.taskId || item.TaskId || index,
@@ -434,6 +393,9 @@ const TaskActionModal = ({
         return {
           id: id || `${index}`,
           title,
+          taskId: String(
+            item.taskId || item.TaskId || item.id || item.key || '',
+          ).trim(),
           taskCategory: String(
             item.taskCategory || item.TaskCategory || item.category || '',
           ).trim(),
@@ -448,28 +410,30 @@ const TaskActionModal = ({
           ).trim(),
           description: String(
             item.description ||
-              item.Description ||
-              item.desc ||
-              item.Desc ||
-              item.details ||
-              item.Details ||
-              item.remarks ||
-              item.Remarks ||
-              item.remark ||
-              item.Remark ||
-              item.taskDesc ||
-              item.TaskDesc ||
-              item.TaskDetails ||
-              '',
+            item.Description ||
+            item.desc ||
+            item.Desc ||
+            item.details ||
+            item.Details ||
+            item.remarks ||
+            item.Remarks ||
+            item.remark ||
+            item.Remark ||
+            item.taskDesc ||
+            item.TaskDesc ||
+            item.TaskDetails ||
+            '',
           ).trim(),
           type: String(
             item.type || item.taskType || item.TaskType || '',
           ).trim(),
           originalPath: item.originalPath || null,
+          catalogTask: item.catalogTask || null,
           raw: item.raw || item,
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter(isVisibleTaskRecord);
   }, [taskChoices]);
 
   const pickTaskOptions = useMemo(() => {
@@ -481,11 +445,11 @@ const TaskActionModal = ({
 
         const title = String(
           item.title ||
-            item.name ||
-            item.taskName ||
-            item.TaskName ||
-            item.label ||
-            '',
+          item.name ||
+          item.taskName ||
+          item.TaskName ||
+          item.label ||
+          '',
         ).trim();
         const id = String(
           item.id || item.key || item.taskId || item.TaskId || index,
@@ -498,6 +462,9 @@ const TaskActionModal = ({
         return {
           id: id || `${index}`,
           title,
+          taskId: String(
+            item.taskId || item.TaskId || item.id || item.key || '',
+          ).trim(),
           taskCategory: String(
             item.taskCategory || item.TaskCategory || item.category || '',
           ).trim(),
@@ -509,19 +476,19 @@ const TaskActionModal = ({
           ).trim(),
           description: String(
             item.description ||
-              item.Description ||
-              item.desc ||
-              item.Desc ||
-              item.details ||
-              item.Details ||
-              item.remarks ||
-              item.Remarks ||
-              item.remark ||
-              item.Remark ||
-              item.taskDesc ||
-              item.TaskDesc ||
-              item.TaskDetails ||
-              '',
+            item.Description ||
+            item.desc ||
+            item.Desc ||
+            item.details ||
+            item.Details ||
+            item.remarks ||
+            item.Remarks ||
+            item.remark ||
+            item.Remark ||
+            item.taskDesc ||
+            item.TaskDesc ||
+            item.TaskDetails ||
+            '',
           ).trim(),
           type: String(
             item.type || item.taskType || item.TaskType || '',
@@ -530,19 +497,21 @@ const TaskActionModal = ({
             item.priority || item.taskPriority || item.TaskPriority || '',
           ).trim(),
           originalPath: item.originalPath || null,
+          catalogTask: item.catalogTask || null,
           raw: item.raw || item,
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter(isVisibleTaskRecord);
   }, [taskOptions]);
 
   const buildTaskChoices = useCallback(async () => {
     const session = await loadLoginSession();
     const userId = String(
       session?.loginId ||
-        session?.employee?.userId ||
-        session?.employee?.id ||
-        '',
+      session?.employee?.userId ||
+      session?.employee?.id ||
+      '',
     ).trim();
 
     if (!userId) {
@@ -566,19 +535,19 @@ const TaskActionModal = ({
           id: String(item?.id ?? item?.key ?? item?.taskId ?? title),
           description: String(
             item?.remark ||
-              item?.Remark ||
-              item?.remarks ||
-              item?.Remarks ||
-              item?.desc ||
-              item?.Desc ||
-              item?.description ||
-              item?.Description ||
-              item?.details ||
-              item?.Details ||
-              item?.taskDesc ||
-              item?.TaskDesc ||
-              item?.TaskDetails ||
-              '',
+            item?.Remark ||
+            item?.remarks ||
+            item?.Remarks ||
+            item?.desc ||
+            item?.Desc ||
+            item?.description ||
+            item?.Description ||
+            item?.details ||
+            item?.Details ||
+            item?.taskDesc ||
+            item?.TaskDesc ||
+            item?.TaskDetails ||
+            '',
           ).trim(),
           type: String(
             item?.type ?? item?.taskType ?? item?.TaskType ?? '',
@@ -593,6 +562,299 @@ const TaskActionModal = ({
       return list;
     };
 
+    const getTaskIdCandidate = item =>
+      String(
+        item?.taskId ??
+        item?.TaskId ??
+        item?.taskKey ??
+        item?.TaskKey ??
+        item?.id ??
+        item?.key ??
+        '',
+      ).trim();
+
+    const normalizeLookupText = value =>
+      String(value ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+
+    const resolveTaskTitle = item =>
+      String(
+        item?.title ||
+        item?.name ||
+        item?.taskName ||
+        item?.TaskName ||
+        item?.label ||
+        '',
+      ).trim();
+
+    const getTaskState = item => {
+      if (!item || typeof item !== 'object') {
+        return { hasState: false, isActive: true };
+      }
+
+      const values = [
+        item.state,
+        item.State,
+        item.status,
+        item.Status,
+        item.taskStatus,
+        item.TaskStatus,
+        item.recordStatus,
+        item.RecordStatus,
+        item.active,
+        item.Active,
+        item.isActive,
+        item.IsActive,
+        item.enabled,
+        item.Enabled,
+        item.visible,
+        item.Visible,
+      ];
+
+      const deleteValues = [
+        item.isDeleted,
+        item.IsDeleted,
+        item.isDelete,
+        item.IsDelete,
+        item.deleted,
+        item.Deleted,
+        item.deletedFlag,
+        item.DeletedFlag,
+        item.removeFlag,
+        item.RemoveFlag,
+        item.removed,
+        item.Removed,
+      ];
+
+      const normalizedState = values
+        .map(value => String(value ?? '').trim().toLowerCase())
+        .find(Boolean);
+      const normalizedDeleteState = deleteValues
+        .map(value => String(value ?? '').trim().toLowerCase())
+        .find(Boolean);
+
+      const isDeleted =
+        normalizedDeleteState === 'yes' ||
+        normalizedDeleteState === 'true' ||
+        normalizedDeleteState === '1' ||
+        normalizedDeleteState === 'deleted';
+
+      const isActive =
+        normalizedState === '1' ||
+        normalizedState === 'true' ||
+        normalizedState === 'yes' ||
+        normalizedState === 'active' ||
+        normalizedState === 'enabled' ||
+        normalizedState === 'visible' ||
+        normalizedState === 'open';
+
+      const isInactive =
+        normalizedState === '0' ||
+        normalizedState === 'false' ||
+        normalizedState === 'no' ||
+        normalizedState === 'inactive' ||
+        normalizedState === 'disabled' ||
+        normalizedState === 'hidden' ||
+        normalizedState === 'deleted' ||
+        normalizedState === 'closed';
+
+      return {
+        hasState: Boolean(normalizedState || normalizedDeleteState),
+        isActive: !isDeleted && (isActive || (!isInactive && !normalizedState)),
+      };
+    };
+
+    const isTaskLeafCandidate = item => {
+      if (!item || typeof item !== 'object') {
+        return false;
+      }
+
+      return Boolean(
+        resolveTaskTitle(item) ||
+        item.taskId ||
+        item.TaskId ||
+        item.id ||
+        item.key ||
+        item.status ||
+        item.Status ||
+        item.taskStatus ||
+        item.TaskStatus ||
+        item.active ||
+        item.Active ||
+        item.isActive ||
+        item.IsActive ||
+        item.isDeleted ||
+        item.IsDeleted ||
+        item.deleted ||
+        item.Deleted,
+      );
+    };
+
+    const collectOtherTaskChoices = (list, node, trail = []) => {
+      if (node === null || node === undefined) {
+        return;
+      }
+
+      if (Array.isArray(node)) {
+        node.forEach((item, index) => {
+          collectOtherTaskChoices(list, item, [...trail, String(index)]);
+        });
+        return;
+      }
+
+      if (typeof node !== 'object') {
+        const title = String(node ?? '').trim();
+        if (title) {
+          pushUnique(list, {
+            title,
+            id: trail[trail.length - 1] || title,
+            priority: 'low',
+            type: 'Other',
+            raw: node,
+          });
+        }
+        return;
+      }
+
+      if (isTaskLeafCandidate(node)) {
+        const state = getTaskState(node);
+        if (state.hasState && !state.isActive) {
+          return;
+        }
+
+        const title = resolveTaskTitle(node);
+        if (!title) {
+          return;
+        }
+
+        pushUnique(list, {
+          ...node,
+          title,
+          id: String(
+            node.id ??
+            node.key ??
+            node.taskId ??
+            node.TaskId ??
+            trail[trail.length - 1] ??
+            title,
+          ),
+          type:
+            String(node.type ?? node.taskType ?? node.TaskType ?? 'Other').trim() ||
+            'Other',
+          priority:
+            String(
+              node.priority ??
+              node.taskPriority ??
+              node.TaskPriority ??
+              'low',
+            ).trim() || 'low',
+          raw: node,
+        });
+        return;
+      }
+
+      Object.entries(node).forEach(([key, value]) => {
+        if (key === 'lastKey') {
+          return;
+        }
+        collectOtherTaskChoices(list, value, [...trail, key]);
+      });
+    };
+
+    const buildTaskCatalogIndex = catalogPayload => {
+      const index = {};
+
+      const visit = (node, trail = []) => {
+        if (node === null || node === undefined) {
+          return;
+        }
+
+        if (Array.isArray(node)) {
+          node.forEach((item, idx) => visit(item, [...trail, String(idx)]));
+          return;
+        }
+
+        if (typeof node !== 'object') {
+          return;
+        }
+
+        const taskId = getTaskIdCandidate(node);
+        if (taskId) {
+          index[taskId] = node;
+        }
+
+        const titleCandidates = [
+          node.title,
+          node.Title,
+          node.name,
+          node.Name,
+          node.taskName,
+          node.TaskName,
+          node.label,
+          node.Label,
+        ]
+          .map(normalizeLookupText)
+          .filter(Boolean);
+
+        titleCandidates.forEach(titleKey => {
+          if (!index[titleKey]) {
+            index[titleKey] = node;
+          }
+        });
+
+        const directKeys = [
+          node.id,
+          node.key,
+          node.taskId,
+          node.TaskId,
+          trail[trail.length - 1],
+        ]
+          .map(value => String(value ?? '').trim())
+          .filter(Boolean);
+
+        directKeys.forEach(key => {
+          if (!index[key]) {
+            index[key] = node;
+          }
+        });
+
+        Object.entries(node).forEach(([key, value]) => {
+          if (key === 'lastKey') {
+            return;
+          }
+          visit(value, [...trail, key]);
+        });
+      };
+
+      visit(catalogPayload);
+      return index;
+    };
+
+    const resolveTaskStateFromCatalog = (task, catalogIndex) => {
+      const taskId = getTaskIdCandidate(task);
+      const catalogTask = (taskId && catalogIndex?.[taskId]) || null;
+      const sourceState = getTaskState(task);
+      const catalogStatus = String(
+        catalogTask?.status ?? catalogTask?.Status ?? '',
+      ).trim();
+      const catalogIsDeleted = String(
+        catalogTask?.isDeleted ?? catalogTask?.IsDeleted ?? '',
+      ).trim().toLowerCase();
+      const catalogVisible =
+        !catalogTask ||
+        (catalogIsDeleted !== 'yes' && catalogStatus === '1');
+      const sourceVisible = !sourceState.hasState || sourceState.isActive;
+
+      return {
+        taskId,
+        catalogTask,
+        state: sourceState,
+        visible: catalogVisible && sourceVisible,
+      };
+    };
+
     const getCurrentDateParts = () => {
       const now = new Date();
       const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -603,22 +865,107 @@ const TaskActionModal = ({
 
     if (mode === 'add_kpi') {
       const dateParts = getCurrentDateParts();
+      const dashboardCache = await readDashboardTaskCache(userId, dateParts.currentDate);
+      if (Array.isArray(dashboardCache?.tasks) && dashboardCache.tasks.length > 0) {
+        return dashboardCache.tasks
+          .map((task, index) => {
+            if (!task) {
+              return null;
+            }
+
+            const title = String(
+              task.title ||
+              task.name ||
+              task.taskName ||
+              task.TaskName ||
+              task.label ||
+              '',
+            ).trim();
+
+            if (!title) {
+              return null;
+            }
+
+            return {
+              ...task,
+              id: String(
+                task.id ||
+                task.key ||
+                task.taskId ||
+                task.TaskId ||
+                index,
+              ).trim(),
+              taskId: String(
+                task.taskId || task.TaskId || task.resolvedTaskId || '',
+              ).trim(),
+              title,
+              description: String(
+                task.description ||
+                task.Description ||
+                task.desc ||
+                task.Desc ||
+                task.details ||
+                task.Details ||
+                task.remarks ||
+                task.Remarks ||
+                task.remark ||
+                task.Remark ||
+                task.taskDesc ||
+                task.TaskDesc ||
+                task.TaskDetails ||
+                '',
+              ).trim(),
+              taskCategory: String(
+                task.taskCategory || task.TaskCategory || task.category || task.Category || '',
+              ).trim(),
+              sourceLabel: String(
+                task.sourceLabel || task.sourceType || task.taskSourceLabel || '',
+              ).trim(),
+              sourceKey: String(
+                task.sourceKey || task.taskSourceKey || task.source_key || '',
+              ).trim(),
+              taskSourceKey: String(
+                task.taskSourceKey || task.sourceKey || task.source_key || '',
+              ).trim(),
+              priority: String(
+                task.priority || task.taskPriority || task.TaskPriority || '',
+              ).trim(),
+              type: String(
+                task.type || task.taskType || task.TaskType || '',
+              ).trim(),
+              originalPath: task.originalPath || task.raw?.originalPath || null,
+              catalogTask: task.catalogTask || null,
+              raw: task.raw || task,
+            };
+          })
+          .filter(Boolean)
+          .filter(isVisibleTaskRecord);
+      }
+
       const kpiPayload = await getData(`IECData/IECKPITasks/${userId}`);
       const priorityPayload = await getData(
         `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}`,
       );
+      const allTaskPayload = await getData('IECData/Tasks');
+      const taskCatalogIndex = buildTaskCatalogIndex(allTaskPayload);
 
       const choices = [];
 
       if (Array.isArray(kpiPayload)) {
         kpiPayload.forEach((item, index) => {
           if (item && typeof item === 'object') {
+            const taskState = resolveTaskStateFromCatalog(item, taskCatalogIndex);
+            if (!taskState.visible) {
+              return;
+            }
             pushUnique(choices, {
               ...item,
-              id: item.id ?? item.key ?? index,
+              id: item.id ?? item.key ?? item.taskId ?? item.TaskId ?? index,
+              taskId: getTaskIdCandidate(item) || null,
               priority: 'low',
               type: item.type ?? item.taskType ?? item.TaskType ?? 'KPI',
               originalPath: `IECData/IECKPITasks/${userId}/${index}`,
+              catalogTask: taskState.catalogTask || null,
             });
             return;
           }
@@ -637,12 +984,18 @@ const TaskActionModal = ({
       } else if (kpiPayload && typeof kpiPayload === 'object') {
         Object.entries(kpiPayload).forEach(([key, value]) => {
           if (value && typeof value === 'object') {
+            const taskState = resolveTaskStateFromCatalog(value, taskCatalogIndex);
+            if (!taskState.visible) {
+              return;
+            }
             pushUnique(choices, {
               ...value,
-              id: value.id ?? value.key ?? key,
+              id: value.id ?? value.key ?? value.taskId ?? value.TaskId ?? key,
+              taskId: getTaskIdCandidate(value) || null,
               priority: 'low',
               type: value.type ?? value.taskType ?? value.TaskType ?? 'KPI',
               originalPath: `IECData/IECKPITasks/${userId}/${key}`,
+              catalogTask: taskState.catalogTask || null,
             });
             return;
           }
@@ -672,18 +1025,24 @@ const TaskActionModal = ({
             }
 
             if (taskValue && typeof taskValue === 'object') {
+              const taskState = resolveTaskStateFromCatalog(taskValue, taskCatalogIndex);
+              if (!taskState.visible) {
+                return;
+              }
+
               const compositeId = `${groupKey}/${taskKey}`;
               pushUnique(choices, {
                 ...taskValue,
                 title: String(
                   taskValue.task ||
-                    taskValue.name ||
-                    taskValue.title ||
-                    taskValue.desc ||
-                    taskValue.description ||
-                    '',
+                  taskValue.name ||
+                  taskValue.title ||
+                  taskValue.desc ||
+                  taskValue.description ||
+                  '',
                 ).trim(),
-                id: taskValue.id || taskValue.key || compositeId,
+                id: taskValue.id || taskValue.key || taskValue.taskId || taskValue.TaskId || compositeId,
+                taskId: getTaskIdCandidate(taskValue) || null,
                 taskCategory: 'Priority',
                 sourceLabel: 'Priority Task',
                 sourceKey: 'priority_task',
@@ -691,6 +1050,7 @@ const TaskActionModal = ({
                 type: 'Priority',
                 priority: 'high',
                 originalPath: `IECData/IECPriorityTasks/${userId}/${dateParts.currentDate}/${groupKey}/${taskKey}`,
+                catalogTask: taskState.catalogTask || null,
               });
             }
           });
@@ -704,61 +1064,7 @@ const TaskActionModal = ({
       const payload = await getData('IECData/Tasks');
       const choices = [];
 
-      if (payload && typeof payload === 'object') {
-        Object.entries(payload).forEach(([key, value]) => {
-          if (key === 'lastKey') {
-            return;
-          }
-
-          if (value && typeof value === 'object') {
-            const status = String(value.status ?? value.Status ?? '');
-            const isDeleted = String(
-              value.isDeleted ?? value.IsDeleted ?? '',
-            ).toLowerCase();
-
-            if (status !== '1' || isDeleted === 'yes') {
-              return; // Skip inactive or deleted tasks
-            }
-
-            const title = String(
-              value.name ||
-                value.title ||
-                value.taskName ||
-                value.TaskName ||
-                '',
-            ).trim();
-            if (title) {
-              pushUnique(choices, {
-                ...value,
-                title,
-                id: value.id || value.key || key,
-                type:
-                  String(
-                    value.type ?? value.taskType ?? value.TaskType ?? 'Other',
-                  ).trim() || 'Other',
-                priority:
-                  String(
-                    value.priority ??
-                      value.taskPriority ??
-                      value.TaskPriority ??
-                      'low',
-                  ).trim() || 'low',
-              });
-            }
-            return;
-          }
-
-          const title = String(value ?? '').trim();
-          if (title) {
-            pushUnique(choices, {
-              title,
-              id: key,
-              priority: 'low',
-              type: 'Other',
-            });
-          }
-        });
-      }
+      collectOtherTaskChoices(choices, payload);
 
       return choices;
     }
@@ -773,62 +1079,62 @@ const TaskActionModal = ({
 
     const resolvedInitialTask = initialTask
       ? {
-          id: String(
-            initialTask.id ??
-              initialTask.key ??
-              initialTask.taskId ??
-              initialTask.TaskId ??
-              initialTask.title ??
-              '',
-          ).trim(),
-          title: String(
-            initialTask.title ??
-              initialTask.name ??
-              initialTask.taskName ??
-              initialTask.TaskName ??
-              initialTask.label ??
-              '',
-          ).trim(),
-          description: String(
-            initialTask.description ??
-              initialTask.desc ??
-              initialTask.taskDesc ??
-              initialTask.TaskDesc ??
-              initialTask.details ??
-              '',
-          ).trim(),
-          type: String(
-            initialTask.type ??
-              initialTask.taskType ??
-              initialTask.TaskType ??
-              '',
-          ).trim(),
-          priority: String(
-            initialTask.priority ??
-              initialTask.taskPriority ??
-              initialTask.TaskPriority ??
-              '',
-          ).trim(),
-          taskCategory: String(
-            initialTask.taskCategory ??
-              initialTask.TaskCategory ??
-              initialTask.category ??
-              '',
-          ).trim(),
-          sourceLabel: String(
-            initialTask.sourceLabel ??
-              initialTask.sourceType ??
-              initialTask.taskSourceLabel ??
-              '',
-          ).trim(),
-          sourceKey: String(
-            initialTask.sourceKey ??
-              initialTask.taskSourceKey ??
-              initialTask.source_key ??
-              '',
-          ).trim(),
-          originalPath: initialTask.originalPath || null,
-        }
+        id: String(
+          initialTask.id ??
+          initialTask.key ??
+          initialTask.taskId ??
+          initialTask.TaskId ??
+          initialTask.title ??
+          '',
+        ).trim(),
+        title: String(
+          initialTask.title ??
+          initialTask.name ??
+          initialTask.taskName ??
+          initialTask.TaskName ??
+          initialTask.label ??
+          '',
+        ).trim(),
+        description: String(
+          initialTask.description ??
+          initialTask.desc ??
+          initialTask.taskDesc ??
+          initialTask.TaskDesc ??
+          initialTask.details ??
+          '',
+        ).trim(),
+        type: String(
+          initialTask.type ??
+          initialTask.taskType ??
+          initialTask.TaskType ??
+          '',
+        ).trim(),
+        priority: String(
+          initialTask.priority ??
+          initialTask.taskPriority ??
+          initialTask.TaskPriority ??
+          '',
+        ).trim(),
+        taskCategory: String(
+          initialTask.taskCategory ??
+          initialTask.TaskCategory ??
+          initialTask.category ??
+          '',
+        ).trim(),
+        sourceLabel: String(
+          initialTask.sourceLabel ??
+          initialTask.sourceType ??
+          initialTask.taskSourceLabel ??
+          '',
+        ).trim(),
+        sourceKey: String(
+          initialTask.sourceKey ??
+          initialTask.taskSourceKey ??
+          initialTask.source_key ??
+          '',
+        ).trim(),
+        originalPath: initialTask.originalPath || null,
+      }
       : null;
 
     const autoTask = resolvedInitialTask?.title
@@ -902,19 +1208,19 @@ const TaskActionModal = ({
         if (details) {
           const freshDesc = String(
             details.remark ||
-              details.Remark ||
-              details.remarks ||
-              details.Remarks ||
-              details.desc ||
-              details.Desc ||
-              details.description ||
-              details.Description ||
-              details.details ||
-              details.Details ||
-              details.taskDesc ||
-              details.TaskDesc ||
-              details.TaskDetails ||
-              '',
+            details.Remark ||
+            details.remarks ||
+            details.Remarks ||
+            details.desc ||
+            details.Desc ||
+            details.description ||
+            details.Description ||
+            details.details ||
+            details.Details ||
+            details.taskDesc ||
+            details.TaskDesc ||
+            details.TaskDetails ||
+            '',
           ).trim();
 
           if (freshDesc) {
@@ -932,33 +1238,18 @@ const TaskActionModal = ({
           }
         }
       } catch (e) {
-        console.log('[TaskActionModal] Detail fetch failed', e);
       }
     }
   };
 
   const handleSave = async () => {
+    if (isSaving) {
+      return;
+    }
+
     if (!selectedTaskParam) {
       setFieldErrors({ selectedTask: true });
       showInlineToast('Please select a task.', 'warning');
-      return;
-    }
-
-    if (!ward.trim()) {
-      setFieldErrors({ ward: true });
-      showInlineToast('Ward number is required.', 'warning');
-      return;
-    }
-
-    if (!participants.trim()) {
-      setFieldErrors({ participants: true });
-      showInlineToast('Participants count is required.', 'warning');
-      return;
-    }
-
-    if (!/^\d+$/.test(participants.trim()) || Number(participants) <= 0) {
-      setFieldErrors({ participants: true });
-      showInlineToast('Enter a valid participants count.', 'warning');
       return;
     }
 
@@ -985,7 +1276,6 @@ const TaskActionModal = ({
         };
       }
     } catch (e) {
-      console.log('[TaskActionModal] location capture failed', e);
     }
 
     try {
@@ -998,49 +1288,38 @@ const TaskActionModal = ({
         resolvedTask.originalPath || resolvedTask.raw?.originalPath || null;
       const taskSourceKey = String(
         resolvedTask.sourceKey ||
-          resolvedTask.taskSourceKey ||
-          resolvedTask.raw?.sourceKey ||
-          resolvedTask.raw?.taskSourceKey ||
-          '',
+        resolvedTask.taskSourceKey ||
+        resolvedTask.raw?.sourceKey ||
+        resolvedTask.raw?.taskSourceKey ||
+        '',
       ).trim();
       const inferredTaskCategory = String(
         resolvedTask.taskCategory ||
-          resolvedTask.TaskCategory ||
-          resolvedTask.sourceLabel ||
-          resolvedTask.type ||
-          resolvedTask.raw?.taskCategory ||
-          resolvedTask.raw?.TaskCategory ||
-          resolvedTask.raw?.sourceLabel ||
-          '',
+        resolvedTask.TaskCategory ||
+        resolvedTask.sourceLabel ||
+        resolvedTask.type ||
+        resolvedTask.raw?.taskCategory ||
+        resolvedTask.raw?.TaskCategory ||
+        resolvedTask.raw?.sourceLabel ||
+        '',
       ).trim();
       const normalizedTaskCategory = taskSourcePath &&
         String(taskSourcePath).includes('IECPriorityTasks')
+        ? 'Priority'
+        : taskSourceKey === 'priority_task'
           ? 'Priority'
-          : taskSourceKey === 'priority_task'
-            ? 'Priority'
           : inferredTaskCategory || null;
       const normalizedTaskPriority = normalizedTaskCategory === 'Priority'
         ? 'high'
         : String(
-            resolvedTask.priority ||
-              resolvedTask.taskPriority ||
-              resolvedTask.TaskPriority ||
-              '',
-          ).trim() || null;
+          resolvedTask.priority ||
+          resolvedTask.taskPriority ||
+          resolvedTask.TaskPriority ||
+          '',
+        ).trim() || null;
       const taskWithoutOriginalPath = { ...resolvedTask };
       delete taskWithoutOriginalPath.originalPath;
       delete taskWithoutOriginalPath.raw;
-
-      console.log('[TaskActionModal] Saving task payload', {
-        mode,
-        title: taskWithoutOriginalPath.title,
-        sourcePath: taskSourcePath,
-        sourceKey: taskSourceKey,
-        taskCategory: normalizedTaskCategory,
-        sourceLabel: normalizedTaskCategory === 'Priority' ? 'Priority Task' : normalizedTaskCategory,
-        priority: normalizedTaskPriority,
-        type: normalizedTaskCategory === 'Priority' ? 'priority' : taskWithoutOriginalPath.type,
-      });
 
       await saveTaskSubmission({
         mode,
@@ -1135,7 +1414,7 @@ const TaskActionModal = ({
       try {
         const thumbnail = await createVideoThumbnail(finalVideoUri);
         thumbnailUri = thumbnail?.path || null;
-      } catch {}
+      } catch { }
 
       setVideos(prev => [
         ...prev,
@@ -1166,6 +1445,7 @@ const TaskActionModal = ({
   const inlineToastTheme = inlineToast
     ? (inlineToastStyles[inlineToast.variant] ?? inlineToastStyles.warning)
     : inlineToastStyles.warning;
+  const dropdownSheetMaxHeight = Dimensions.get('window').height * 0.5;
 
   return (
     <>
@@ -1173,6 +1453,11 @@ const TaskActionModal = ({
         visible={isCameraVisible}
         onClose={() => setIsCameraVisible(false)}
         onPictureTaken={onPictureTaken}
+      />
+      <CommonLoader
+        visible={isSaving}
+        message="Saving task..."
+        subMessage="Please wait while the task is being submitted."
       />
       <Modal
         visible={visible}
@@ -1189,108 +1474,83 @@ const TaskActionModal = ({
         >
           <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
             <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
-
-            <View style={styles.header}>
-              <TouchableOpacity
-                style={styles.backBtn}
-                onPress={onClose}
-                activeOpacity={0.6}
-              >
-                <MaterialCommunityIcons
-                  name="arrow-left"
-                  size={24}
-                  color={appTheme.colors.neutral.text}
-                />
-              </TouchableOpacity>
-              <View style={styles.headerTitleWrap}>
-                <Text style={styles.headerTitle}>{getPageTitle()}</Text>
-                <Text style={styles.headerSubtitle}>
-                  Please fill the required details below
-                </Text>
-              </View>
-            </View>
-
-            <KeyboardAvoidingView
+            <View
               style={{ flex: 1 }}
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              pointerEvents={isSaving ? 'none' : 'auto'}
             >
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={styles.scrollContent}
-              >
-                <View
-                  style={[
-                    styles.inputGroup,
-                    {
-                      zIndex: 100,
-                      ...(Platform.OS === 'android'
-                        ? { elevation: dropdownOpen ? 10 : 0 }
-                        : {}),
-                    },
-                  ]}
+              <View style={styles.header}>
+                <TouchableOpacity
+                  style={styles.backBtn}
+                  onPress={onClose}
+                  activeOpacity={0.6}
+                  disabled={isSaving}
                 >
-                  <View style={styles.labelRow}>
-                    <Text style={styles.label}>
-                      Task <Text style={styles.reqStar}>*</Text>
-                    </Text>
-                    {selectedTaskParam && (
-                      <TouchableOpacity
-                        style={styles.labelInfoBtn}
-                        onPress={() => setInfoModalVisible(true)}
-                        activeOpacity={0.7}
-                      >
-                        <MaterialCommunityIcons
-                          name="information-outline"
-                          size={14}
-                          color={appTheme.colors.brand.primary}
-                        />
-                        <Text style={styles.labelInfoText}>View Details</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                  {mode !== 'pick_task' && (
-                    <Text style={styles.dropdownHint}>
-                      Tap the field to open the dropdown
-                    </Text>
-                  )}
-                  {mode === 'pick_task' ? (
-                    <View
-                      style={[
-                        styles.pickerSelector,
-                        styles.pickerSelectorLocked,
-                        fieldErrors.selectedTask ? styles.inputError : null,
-                      ]}
-                    >
-                      <View style={styles.pickerContent}>
-                        <MaterialCommunityIcons
-                          name="clipboard-check-outline"
-                          size={20}
-                          color={appTheme.colors.brand.primary}
-                          style={styles.pickerIcon}
-                        />
-                        <View style={styles.pickerTextWrap}>
-                          <Text style={styles.pickerText}>
-                            {selectedTaskParam || 'Selected task'}
-                          </Text>
-                        </View>
-                      </View>
-                      <MaterialCommunityIcons
-                        name="lock-outline"
-                        size={18}
-                        color={appTheme.colors.neutral.textMuted}
-                      />
+                  <MaterialCommunityIcons
+                    name="arrow-left"
+                    size={24}
+                    color={appTheme.colors.neutral.text}
+                  />
+                </TouchableOpacity>
+                <View style={styles.headerTitleWrap}>
+                  <Text style={styles.headerTitle}>{getPageTitle()}</Text>
+                  <Text style={styles.headerSubtitle}>
+                    Please fill the required details below
+                  </Text>
+                </View>
+              </View>
+
+              <KeyboardAvoidingView
+                style={{ flex: 1 }}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              >
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.scrollContent}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <View
+                    style={[
+                      styles.inputGroup,
+                      {
+                        zIndex: 100,
+                        ...(Platform.OS === 'android'
+                          ? { elevation: dropdownOpen ? 10 : 0 }
+                          : {}),
+                      },
+                    ]}
+                  >
+                    <View style={styles.labelRow}>
+                      <Text style={styles.label}>
+                        Task <Text style={styles.reqStar}>*</Text>
+                      </Text>
+                      {selectedTaskParam && (
+                        <TouchableOpacity
+                          style={styles.labelInfoBtn}
+                          onPress={() => setInfoModalVisible(true)}
+                          activeOpacity={0.7}
+                        >
+                          <MaterialCommunityIcons
+                            name="information-outline"
+                            size={14}
+                            color={appTheme.colors.brand.primary}
+                          />
+                          <Text style={styles.labelInfoText}>View Details</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
-                  ) : (
-                    <View style={styles.dropdownWrap}>
-                      <TouchableOpacity
+                    {mode !== 'pick_task' && (
+                      <Text style={styles.dropdownHint}>
+                        Tap the field to open the dropdown
+                      </Text>
+                    )}
+                    {mode === 'pick_task' ? (
+                      <View
                         style={[
                           styles.pickerSelector,
+                          styles.pickerSelectorLocked,
                           fieldErrors.selectedTask ? styles.inputError : null,
                         ]}
-                        activeOpacity={0.7}
-                        onPress={() => {
-                          setDropdownOpen(prev => !prev);
-                        }}
                       >
                         <View style={styles.pickerContent}>
                           <MaterialCommunityIcons
@@ -1300,286 +1560,344 @@ const TaskActionModal = ({
                             style={styles.pickerIcon}
                           />
                           <View style={styles.pickerTextWrap}>
-                            <Text
-                              style={[
-                                styles.pickerText,
-                                !selectedTaskParam && styles.pickerPlaceholder,
-                              ]}
-                            >
-                              {selectedTaskParam
-                                ? selectedTaskParam
-                                : getDropdownPlaceholder()}
+                            <Text style={styles.pickerText}>
+                              {selectedTaskParam || 'Selected task'}
                             </Text>
                           </View>
-
                         </View>
                         <MaterialCommunityIcons
-                          name={dropdownOpen ? 'chevron-up' : 'chevron-down'}
-                          size={22}
+                          name="lock-outline"
+                          size={18}
                           color={appTheme.colors.neutral.textMuted}
                         />
-                      </TouchableOpacity>
-
-                      {dropdownOpen && (
-                        <View style={styles.dropdownPanel}>
-                          <ScrollView
-                            nestedScrollEnabled
-                            showsVerticalScrollIndicator={true}
-                            contentContainerStyle={styles.dropdownScrollContent}
-                          >
-                            {optionsLoading ? (
-                              <View style={styles.dropdownEmpty}>
-                                <Text style={styles.dropdownEmptyText}>
-                                  Loading tasks...
-                                </Text>
-                              </View>
-                            ) : optionsError ? (
-                              <View style={styles.dropdownEmpty}>
-                                <Text style={styles.dropdownEmptyText}>
-                                  {optionsError}
-                                </Text>
-                              </View>
-                            ) : normalizedTaskOptions.length ? (
-                              normalizedTaskOptions.map(item => {
-                                const isSelected =
-                                  selectedTaskParam === item.title;
-                                return (
-                                  <TouchableOpacity
-                                    key={item.id}
-                                    style={[
-                                      styles.dropdownItem,
-                                      isSelected
-                                        ? styles.dropdownItemActive
-                                        : null,
-                                    ]}
-                                    activeOpacity={0.75}
-                                    onPress={() => handleSelectTask(item)}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.dropdownItemTitle,
-                                        isSelected &&
-                                          styles.dropdownItemTitleActive,
-                                      ]}
-                                    >
-                                      {item.title}
-                                    </Text>
-                                    {isSelected && (
-                                      <MaterialCommunityIcons
-                                        name="check-circle"
-                                        size={20}
-                                        color={appTheme.colors.brand.primary}
-                                      />
-                                    )}
-                                  </TouchableOpacity>
-                                );
-                              })
-                            ) : (
-                              <View style={styles.dropdownEmpty}>
-                                <Text style={styles.dropdownEmptyText}>
-                                  No tasks available
-                                </Text>
-                              </View>
-                            )}
-                          </ScrollView>
-                        </View>
-                      )}
-                    </View>
-                  )}
-                </View>
-
-                <View style={styles.rowGrid}>
-                  <View style={[styles.inputGroup, { flex: 1, marginRight: 12 }]}>
-                    <Text style={styles.label}>
-                      Ward No. <Text style={styles.reqStar}>*</Text>
-                    </Text>
-                    <TextInput
-                      style={[
-                        styles.input,
-                        fieldErrors.ward ? styles.inputError : null,
-                      ]}
-                      placeholder="Ex: 14A"
-                      placeholderTextColor="#94A3B8"
-                      value={ward}
-                      onChangeText={updateField(setWard, 'ward')}
-                      keyboardType="default"
-                    />
-                  </View>
-                  <View style={[styles.inputGroup, { flex: 1 }]}>
-                    <Text style={styles.label}>
-                      Participants <Text style={styles.reqStar}>*</Text>
-                    </Text>
-                    <TextInput
-                      style={[
-                        styles.input,
-                        fieldErrors.participants ? styles.inputError : null,
-                      ]}
-                      placeholder="Total count"
-                      placeholderTextColor="#94A3B8"
-                      value={participants}
-                      onChangeText={updateField(setParticipants, 'participants')}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.mediaSection}>
-                  <View style={styles.mediaHeaderRow}>
-                    <View>
-                      <Text style={styles.mediaTitle}>Task Photos</Text>
-                      <Text style={styles.mediaSubtitle}>
-                        Take clear pictures of the work
-                      </Text>
-                    </View>
-                    <Text style={styles.mediaCount}>{images.length} / 5</Text>
-                  </View>
-
-                  <View style={styles.mediaGrid}>
-                    {images.length < 5 && (
-                      <TouchableOpacity
-                        style={[styles.previewCard, styles.uploadDashedBox]}
-                        activeOpacity={0.7}
-                        onPress={captureImage}
-                      >
-                        <MaterialCommunityIcons
-                          name="camera-plus"
-                          size={32}
-                          color={appTheme.colors.brand.primary}
-                        />
-                        <Text style={styles.uploadSmallText}>Add Photo</Text>
-                      </TouchableOpacity>
-                    )}
-
-                    {images.map((imgUri, index) => (
-                      <TouchableOpacity
-                        key={index}
-                        style={styles.previewCard}
-                        activeOpacity={0.8}
-                        onPress={() => setPreviewImage(imgUri)}
-                      >
-                        <Image
-                          source={{ uri: imgUri }}
-                          style={styles.previewImg}
-                        />
-                        <TouchableOpacity
-                          style={styles.removeMediaBtn}
-                          onPress={() => {
-                            const newImgs = [...images];
-                            newImgs.splice(index, 1);
-                            setImages(newImgs);
-                          }}
-                        >
-                          <MaterialCommunityIcons
-                            name="close"
-                            size={14}
-                            color="#FFF"
-                          />
-                        </TouchableOpacity>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-
-                <View style={styles.mediaSection}>
-                  <View style={styles.mediaHeaderRow}>
-                    <View>
-                      <Text style={styles.mediaTitle}>
-                        Task Video{' '}
-                        <Text style={styles.optionalText}>(Optional)</Text>
-                      </Text>
-                      <Text style={styles.mediaSubtitle}>
-                        Keep it under 30 seconds
-                      </Text>
-                    </View>
-                    <Text style={styles.mediaCount}>{videos.length} / 2</Text>
-                  </View>
-
-                  <View style={styles.mediaGrid}>
-                    {isCompressing ? (
-                      <View style={[styles.previewCard, styles.compressingCard]}>
-                        <ActivityIndicator
-                          size="large"
-                          color={appTheme.colors.brand.primary}
-                        />
-                        <Text style={styles.compressingText}>Compressing...</Text>
                       </View>
                     ) : (
-                      videos.length < 2 && (
+                      <View style={styles.dropdownWrap}>
+                        <TouchableOpacity
+                          style={[
+                            styles.pickerSelector,
+                            fieldErrors.selectedTask ? styles.inputError : null,
+                          ]}
+                          activeOpacity={0.7}
+                          onPress={() => {
+                            setDropdownOpen(prev => !prev);
+                          }}
+                        >
+                          <View style={styles.pickerContent}>
+                            <MaterialCommunityIcons
+                              name="clipboard-check-outline"
+                              size={20}
+                              color={appTheme.colors.brand.primary}
+                              style={styles.pickerIcon}
+                            />
+                            <View style={styles.pickerTextWrap}>
+                              <Text
+                                style={[
+                                  styles.pickerText,
+                                  !selectedTaskParam && styles.pickerPlaceholder,
+                                ]}
+                              >
+                                {selectedTaskParam
+                                  ? selectedTaskParam
+                                  : getDropdownPlaceholder()}
+                              </Text>
+                            </View>
+
+                          </View>
+                          <MaterialCommunityIcons
+                            name={dropdownOpen ? 'chevron-up' : 'chevron-down'}
+                            size={22}
+                            color={appTheme.colors.neutral.textMuted}
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.rowGrid}>
+                    <View style={[styles.inputGroup, { flex: 1, marginRight: 12 }]}>
+                      <Text style={styles.label}>
+                        Ward No.
+                      </Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          fieldErrors.ward ? styles.inputError : null,
+                        ]}
+                        placeholder="Ex: 14A"
+                        placeholderTextColor="#94A3B8"
+                        value={ward}
+                        onChangeText={updateField(setWard, 'ward')}
+                        keyboardType="default"
+                        editable={!isSaving}
+                      />
+                    </View>
+                    <View style={[styles.inputGroup, { flex: 1 }]}>
+                      <Text style={styles.label}>
+                        Participants
+                      </Text>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          fieldErrors.participants ? styles.inputError : null,
+                        ]}
+                        placeholder="Total count"
+                        placeholderTextColor="#94A3B8"
+                        value={participants}
+                        onChangeText={updateField(setParticipants, 'participants')}
+                        keyboardType="numeric"
+                        editable={!isSaving}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.mediaSection}>
+                    <View style={styles.mediaHeaderRow}>
+                      <View>
+                        <Text style={styles.mediaTitle}>Task Photos</Text>
+                        <Text style={styles.mediaSubtitle}>
+                          Take clear pictures of the work
+                        </Text>
+                      </View>
+                      <Text style={styles.mediaCount}>{images.length} / 5</Text>
+                    </View>
+
+                    <View style={styles.mediaGrid}>
+                      {images.length < 5 && (
                         <TouchableOpacity
                           style={[styles.previewCard, styles.uploadDashedBox]}
                           activeOpacity={0.7}
-                          onPress={captureVideo}
+                          onPress={captureImage}
                         >
                           <MaterialCommunityIcons
-                            name="video-plus"
+                            name="camera-plus"
                             size={32}
                             color={appTheme.colors.brand.primary}
                           />
-                          <Text style={styles.uploadSmallText}>Add Video</Text>
+                          <Text style={styles.uploadSmallText}>Add Photo</Text>
                         </TouchableOpacity>
-                      )
-                    )}
+                      )}
 
-                    {videos.map((videoItem, index) => (
-                      <View key={index} style={styles.previewCard}>
-                        {videoItem.thumbnailUri ? (
+                      {images.map((imgUri, index) => (
+                        <TouchableOpacity
+                          key={index}
+                          style={styles.previewCard}
+                          activeOpacity={0.8}
+                          onPress={() => setPreviewImage(imgUri)}
+                        >
                           <Image
-                            source={{ uri: videoItem.thumbnailUri }}
+                            source={{ uri: imgUri }}
                             style={styles.previewImg}
                           />
-                        ) : (
-                          <View style={styles.videoPlaceholder}>
+                          <TouchableOpacity
+                            style={styles.removeMediaBtn}
+                            onPress={() => {
+                              const newImgs = [...images];
+                              newImgs.splice(index, 1);
+                              setImages(newImgs);
+                            }}
+                          >
                             <MaterialCommunityIcons
-                              name="play-circle"
-                              size={38}
+                              name="close"
+                              size={14}
                               color="#FFF"
                             />
-                          </View>
-                        )}
-                        <TouchableOpacity
-                          style={styles.removeMediaBtn}
-                          onPress={() => {
-                            const newVids = [...videos];
-                            newVids.splice(index, 1);
-                            setVideos(newVids);
-                          }}
-                        >
-                          <MaterialCommunityIcons
-                            name="close"
-                            size={14}
-                            color="#FFF"
-                          />
+                          </TouchableOpacity>
                         </TouchableOpacity>
-                      </View>
-                    ))}
+                      ))}
+                    </View>
                   </View>
+
+                  <View style={styles.mediaSection}>
+                    <View style={styles.mediaHeaderRow}>
+                      <View>
+                        <Text style={styles.mediaTitle}>
+                          Task Video{' '}
+                          <Text style={styles.optionalText}>(Optional)</Text>
+                        </Text>
+                        <Text style={styles.mediaSubtitle}>
+                          Keep it under 30 seconds
+                        </Text>
+                      </View>
+                      <Text style={styles.mediaCount}>{videos.length} / 2</Text>
+                    </View>
+
+                    <View style={styles.mediaGrid}>
+                      {isCompressing ? (
+                        <View style={[styles.previewCard, styles.compressingCard]}>
+                          <ActivityIndicator
+                            size="large"
+                            color={appTheme.colors.brand.primary}
+                          />
+                          <Text style={styles.compressingText}>Compressing...</Text>
+                        </View>
+                      ) : (
+                        videos.length < 2 && (
+                          <TouchableOpacity
+                            style={[styles.previewCard, styles.uploadDashedBox]}
+                            activeOpacity={0.7}
+                            onPress={captureVideo}
+                          >
+                            <MaterialCommunityIcons
+                              name="video-plus"
+                              size={32}
+                              color={appTheme.colors.brand.primary}
+                            />
+                            <Text style={styles.uploadSmallText}>Add Video</Text>
+                          </TouchableOpacity>
+                        )
+                      )}
+
+                      {videos.map((videoItem, index) => (
+                        <View key={index} style={styles.previewCard}>
+                          {videoItem.thumbnailUri ? (
+                            <Image
+                              source={{ uri: videoItem.thumbnailUri }}
+                              style={styles.previewImg}
+                            />
+                          ) : (
+                            <View style={styles.videoPlaceholder}>
+                              <MaterialCommunityIcons
+                                name="play-circle"
+                                size={38}
+                                color="#FFF"
+                              />
+                            </View>
+                          )}
+                          <TouchableOpacity
+                            style={styles.removeMediaBtn}
+                            onPress={() => {
+                              const newVids = [...videos];
+                              newVids.splice(index, 1);
+                              setVideos(newVids);
+                            }}
+                          >
+                            <MaterialCommunityIcons
+                              name="close"
+                              size={14}
+                              color="#FFF"
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>
+                      Remarks / Description <Text style={styles.reqStar}>*</Text>
+                    </Text>
+                    <TextInput
+                      style={[
+                        styles.input,
+                        styles.textArea,
+                        fieldErrors.remark ? styles.inputError : null,
+                      ]}
+                      placeholder="Write observation details here..."
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                      numberOfLines={4}
+                      value={remark}
+                      onChangeText={updateField(setRemark, 'remark')}
+                      textAlignVertical="top"
+                      editable={!isSaving}
+                    />
+                  </View>
+
+                  <View style={{ height: 100 }} />
+                </ScrollView>
+              </KeyboardAvoidingView>
+            </View>
+
+            {dropdownOpen ? (
+              <View style={styles.dropdownOverlay} pointerEvents="box-none">
+                <TouchableOpacity
+                  activeOpacity={1}
+                  style={styles.dropdownBackdrop}
+                  onPress={() => setDropdownOpen(false)}
+                />
+                <View
+                  style={[
+                    styles.dropdownPanel,
+                    { maxHeight: dropdownSheetMaxHeight },
+                  ]}
+                >
+                  <View style={styles.dropdownSheetHeader}>
+                    <Text style={styles.dropdownSheetTitle}>Select task</Text>
+                    <TouchableOpacity
+                      onPress={() => setDropdownOpen(false)}
+                      style={styles.dropdownSheetCloseBtn}
+                      activeOpacity={0.75}
+                    >
+                      <MaterialCommunityIcons
+                        name="close"
+                        size={20}
+                        color={appTheme.colors.neutral.textMuted}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={true}
+                    keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={styles.dropdownScrollContent}
+                  >
+                    {optionsLoading ? (
+                      <View style={styles.dropdownEmpty}>
+                        <Text style={styles.dropdownEmptyText}>
+                          Loading tasks...
+                        </Text>
+                      </View>
+                    ) : optionsError ? (
+                      <View style={styles.dropdownEmpty}>
+                        <Text style={styles.dropdownEmptyText}>
+                          {optionsError}
+                        </Text>
+                      </View>
+                    ) : normalizedTaskOptions.length ? (
+                      normalizedTaskOptions.map(item => {
+                        const isSelected = selectedTaskParam === item.title;
+                        return (
+                          <TouchableOpacity
+                            key={item.id}
+                            style={[
+                              styles.dropdownItem,
+                              isSelected ? styles.dropdownItemActive : null,
+                            ]}
+                            activeOpacity={0.75}
+                            onPress={() => handleSelectTask(item)}
+                          >
+                            <Text
+                              style={[
+                                styles.dropdownItemTitle,
+                                isSelected && styles.dropdownItemTitleActive,
+                              ]}
+                            >
+                              {item.title}
+                            </Text>
+                            {isSelected && (
+                              <MaterialCommunityIcons
+                                name="check-circle"
+                                size={20}
+                                color={appTheme.colors.brand.primary}
+                              />
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })
+                    ) : (
+                      <View style={styles.dropdownEmpty}>
+                        <Text style={styles.dropdownEmptyText}>
+                          No tasks available
+                        </Text>
+                      </View>
+                    )}
+                  </ScrollView>
                 </View>
-
-                <View style={styles.divider} />
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>
-                    Remarks / Description <Text style={styles.reqStar}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={[
-                      styles.input,
-                      styles.textArea,
-                      fieldErrors.remark ? styles.inputError : null,
-                    ]}
-                    placeholder="Write observation details here..."
-                    placeholderTextColor="#94A3B8"
-                    multiline
-                    numberOfLines={4}
-                    value={remark}
-                    onChangeText={updateField(setRemark, 'remark')}
-                    textAlignVertical="top"
-                  />
-                </View>
-
-                <View style={{ height: 100 }} />
-              </ScrollView>
-            </KeyboardAvoidingView>
+              </View>
+            ) : null}
 
             {inlineToast ? (
               <View pointerEvents="none" style={styles.inlineToastWrap}>
@@ -1673,7 +1991,7 @@ const TaskActionModal = ({
       <TaskDetailModal
         visible={infoModalVisible}
         onClose={() => setInfoModalVisible(false)}
-        onStart={() => {}}
+        onStart={() => { }}
         task={
           selectedTaskMeta ||
           pickTaskOptions.find(item => item.title === selectedTaskParam) ||
@@ -1807,22 +2125,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
-   taskInfoBtn: {
-     flexDirection: 'row',
-     paddingHorizontal: 10,
-     paddingVertical: 6,
-     marginLeft: 8,
-     backgroundColor: 'rgba(18, 59, 74, 0.08)',
-     borderRadius: 12,
-     alignItems: 'center',
-     justifyContent: 'center',
-     gap: 6,
-   },
-   taskInfoBtnText: {
-     fontSize: 12,
-     fontWeight: '800',
-     color: appTheme.colors.brand.primary,
-   },
+  taskInfoBtn: {
+    flexDirection: 'row',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginLeft: 8,
+    backgroundColor: 'rgba(18, 59, 74, 0.08)',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  taskInfoBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: appTheme.colors.brand.primary,
+  },
   infoModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -1907,23 +2225,52 @@ const styles = StyleSheet.create({
     position: 'relative',
     zIndex: 999,
   },
+  dropdownOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2500,
+    justifyContent: 'flex-end',
+  },
+  dropdownBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.28)',
+  },
   dropdownPanel: {
-    position: 'absolute',
-    top: 64,
-    left: 0,
-    right: 0,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderRadius: 14,
     backgroundColor: '#FFF',
-    overflow: 'hidden',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
+    borderColor: '#E2E8F0',
+    paddingTop: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
-    zIndex: 1000,
-    maxHeight: 280, // Safe maximum height to avoid leaving the screen
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: -6 },
+    elevation: 18,
+  },
+  dropdownSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  dropdownSheetTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: 0.2,
+  },
+  dropdownSheetCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1F5F9',
   },
   dropdownScrollContent: {
     paddingTop: 4,
@@ -1940,7 +2287,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
   },
   dropdownItemActive: {
-    backgroundColor: 'rgba(18, 59, 74, 0.08)', // Selection fill color
+    backgroundColor: '#F1F5F9',
   },
   dropdownItemTitle: {
     fontSize: 15,

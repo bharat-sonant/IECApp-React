@@ -82,7 +82,6 @@ const prepareImageForUpload = async sourcePath => {
   try {
     ImageResizer = require('react-native-image-resizer').default;
   } catch (e) {
-    console.log('[ImageResizer] Library not found:', e?.message);
     throw new Error('Image resizer library not available');
   }
 
@@ -99,7 +98,6 @@ const prepareImageForUpload = async sourcePath => {
   // Check if file exists first
   const fileExists = await RNFS.exists(normalizedSourcePath);
   if (!fileExists) {
-    console.log('[ImageResizer] File not found:', normalizedSourcePath);
     throw new Error(`Cannot read "${normalizedSourcePath}" - file not found`);
   }
 

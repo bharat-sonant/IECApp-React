@@ -18,6 +18,7 @@ import { loadLoginSession } from '../services/sessionService';
 import { useLocation } from '../context/LocationContext';
 import { checkForUpdates } from '../services/otaService';
 import UpdateModal from '../components/UpdateModal/UpdateModal';
+import { ensureSharedMediaCleanup } from '../services/sharedMediaService';
 
 const LauncherScreen = ({ navigation }) => {
   const { width, height } = useWindowDimensions();
@@ -65,7 +66,7 @@ const LauncherScreen = ({ navigation }) => {
 
     const runStartup = async () => {
       try {
-        console.log('[Launcher] startup check begin');
+        await ensureSharedMediaCleanup();
         const foundUpdate = await checkForUpdates(
           {
             onUpdateFound: (
@@ -110,7 +111,6 @@ const LauncherScreen = ({ navigation }) => {
               hideUpdateModal();
             },
             onError: error => {
-              console.log('[Launcher] OTA check error', error);
               hideUpdateModal();
               navigateTimerRef.current = setTimeout(() => {
                 if (isActive) {
@@ -122,8 +122,6 @@ const LauncherScreen = ({ navigation }) => {
           null,
           { skipNativeExit: false },
         );
-
-        console.log('[Launcher] startup check result', { foundUpdate });
 
         if (!isActive || foundUpdate) {
           return;
@@ -141,7 +139,6 @@ const LauncherScreen = ({ navigation }) => {
           navigation.replace(session ? 'Dashboard' : 'Login');
         }, 2000);
       } catch (error) {
-        console.log('[Launcher] startup flow failed', error);
         navigateTimerRef.current = setTimeout(async () => {
           if (!isActive) return;
           let session = null;

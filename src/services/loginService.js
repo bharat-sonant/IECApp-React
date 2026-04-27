@@ -1,11 +1,11 @@
 import {getData} from '../firebase/firebaseService';
-import {FIREBASE_CONFIG} from '../firebase/firebaseConfig';
 import CryptoJS from 'crypto-js';
 import DeviceInfo from 'react-native-device-info';
 
 export const APP_VERSION = DeviceInfo.getVersion() || '1.0.0.1';
 export const LATEST_VERSION_PATH = 'Settings/LatestVersions/IECNativeApp';
-export const AVAILABLE_DESIGNATIONS_PATH = 'Common/IECAvailableDesignations.json';
+export const AVAILABLE_DESIGNATIONS_URL =
+  'https://firebasestorage.googleapis.com/v0/b/dtdnavigator.appspot.com/o/Common%2FIECAvailableDesignations.json?alt=media&token=eb5d1dd0-0461-4b0d-a57a-5fc6c469acd5';
 
 const EMPLOYEE_GENERAL_DETAILS_PATH = userId =>
   `Employees/${String(userId).trim()}/GeneralDetails`;
@@ -18,15 +18,6 @@ const asString = value =>
   value === null || value === undefined ? '' : String(value).trim();
 
 const normalizeDesignationId = value => asString(value);
-
-const buildStorageDownloadUrl = filePath => {
-  const bucket =
-    FIREBASE_CONFIG?.storageBucket?.replace(/^gs:\/\//, '') ??
-    'devtest-62768.firebasestorage.app';
-  const encodedPath = encodeURIComponent(filePath).replace(/%2F/g, '%2F');
-
-  return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
-};
 
 const extractDesignationIds = payload => {
   if (!payload) {
@@ -152,8 +143,10 @@ export const readEmployeeGeneralDetails = async userId => {
 export const readAvailableDesignations = async () => {
   if (!availableDesignationsPromise) {
     availableDesignationsPromise = (async () => {
-      const downloadUrl = buildStorageDownloadUrl(AVAILABLE_DESIGNATIONS_PATH);
-      const response = await fetch(downloadUrl);
+      const response = await fetch(AVAILABLE_DESIGNATIONS_URL);
+      if (!response.ok) {
+        throw new Error('Unable to load available designations.');
+      }
       const payload = await response.json();
       const designationIds = extractDesignationIds(payload);
       return designationIds;

@@ -153,39 +153,17 @@ const TaskMonitoringScreen = ({ navigation }) => {
   };
 
   const handleOpenDatePicker = useCallback(() => {
-    console.log('[TaskMonitoring] open date picker', {
-      selectedDate,
-    });
     setCalendarMonth(parseDate(selectedDate));
     setDatePickerOpen(true);
   }, [selectedDate, setCalendarMonth]);
 
   useEffect(() => {
-    console.log('[TaskMonitoring] screen mounted', {
-      selectedDate,
-      selectedFilter,
-      tasksCount: tasks.length,
-      filteredCount: filteredTasks.length,
-    });
 
     return () => {
-      console.log('[TaskMonitoring] screen unmounted');
     };
   }, []);
 
   useEffect(() => {
-    console.log('[TaskMonitoring] render state', {
-      selectedFilter,
-      selectedDate,
-      calendarMonth: getMonthLabel(calendarMonth),
-      tasksCount: tasks.length,
-      filteredCount: filteredTasks.length,
-      stats,
-      datePickerOpen,
-      filterMenuOpen,
-      hasSelectedTask: Boolean(selectedTask),
-      mediaViewerOpen,
-    });
   }, [
     calendarMonth,
     datePickerOpen,
@@ -213,13 +191,6 @@ const TaskMonitoringScreen = ({ navigation }) => {
       <Pressable
         style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
         onPress={() => {
-          console.log('[TaskMonitoring] task selected', {
-            id: item?.id || '(empty)',
-            title: item?.title || '(empty)',
-            status: item?.status || '(empty)',
-            images: item?.images ?? 0,
-            videos: item?.videos ?? 0,
-          });
           setSelectedTask(item);
         }}
       >
@@ -688,12 +659,6 @@ const TaskMonitoringScreen = ({ navigation }) => {
               <TouchableOpacity
                 style={styles.viewMediaButton}
                 onPress={() => {
-                  console.log('[TaskMonitoring] view media requested', {
-                    taskId: selectedTask?.id || '(empty)',
-                    title: selectedTask?.title || '(empty)',
-                    images: selectedTask?.imageUrls?.length || 0,
-                    videos: selectedTask?.videoUrls?.length || 0,
-                  });
                   const imgs = selectedTask?.imageUrls || [];
                   const vids = selectedTask?.videoUrls || [];
                   setMediaImages(imgs);

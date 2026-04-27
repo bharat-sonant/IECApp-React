@@ -8,10 +8,12 @@ import {
   StyleSheet,
   Text,
   ScrollView,
+  Share,
   TouchableOpacity,
   View,
   Animated,
   Dimensions,
+  Platform,
 } from 'react-native';
 import RNFS from 'react-native-fs';
 import { NativeModules } from 'react-native';
@@ -61,10 +63,10 @@ const toastStyles = {
 const MediaRow = ({
   item,
   onPreview,
-  onDownload,
+  onShare,
   onDownloadWithLatLng,
-  downloading,
-  downloadingWithLatLng,
+  sharing,
+  sharingWithLatLng,
   index,
   showLatLngOptions,
   videoThumbnailUri,
@@ -82,9 +84,9 @@ const MediaRow = ({
               <ActivityIndicator size="small" color={appTheme.colors.brand.primary} />
             </View>
           )}
-          <Image 
-            source={{ uri: item.uri }} 
-            style={styles.thumbnail} 
+          <Image
+            source={{ uri: item.uri }}
+            style={styles.thumbnail}
             resizeMode="cover"
             onLoadStart={() => setImgLoading(true)}
             onLoadEnd={() => setImgLoading(false)}
@@ -114,7 +116,7 @@ const MediaRow = ({
               </View>
             )}
             <View style={styles.videoThumbOverlay} />
-           
+
           </View>
         </View>
       )}
@@ -124,11 +126,11 @@ const MediaRow = ({
       {showLatLngOptions ? (
         <View style={styles.downloadIconStack}>
           <TouchableOpacity
-            style={[styles.iconAction, downloadingWithLatLng && styles.iconBusy]}
+            style={[styles.iconAction, sharingWithLatLng && styles.iconBusy]}
             onPress={onDownloadWithLatLng}
-            disabled={downloading || downloadingWithLatLng}
+            disabled={sharing || sharingWithLatLng}
           >
-            {downloadingWithLatLng ? (
+            {sharingWithLatLng ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <MaterialCommunityIcons
@@ -139,32 +141,28 @@ const MediaRow = ({
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.iconAction, downloading && styles.iconBusy]}
-            onPress={onDownload}
-            disabled={downloading || downloadingWithLatLng}
+            style={[styles.iconAction, sharing && styles.iconBusy]}
+            onPress={onShare}
+            disabled={sharing || sharingWithLatLng}
           >
-            {downloading ? (
+            {sharing ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
-              <MaterialCommunityIcons name="download" size={18} color="#fff" />
+              <MaterialCommunityIcons name="share-variant" size={18} color="#fff" />
             )}
           </TouchableOpacity>
         </View>
       ) : (
         <View style={styles.singleIconWrap}>
           <TouchableOpacity
-            style={[styles.iconAction, downloading && styles.iconBusy]}
-            onPress={onDownload}
-            disabled={downloading}
+            style={[styles.iconAction, sharing && styles.iconBusy]}
+            onPress={onShare}
+            disabled={sharing}
           >
-            {downloading ? (
+            {sharing ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
-              <MaterialCommunityIcons
-                name="download"
-                size={18}
-                color="#fff"
-              />
+              <MaterialCommunityIcons name="share-variant" size={18} color="#fff" />
             )}
           </TouchableOpacity>
         </View>
@@ -209,19 +207,10 @@ const MediaViewer = ({
       previewSlideAnim.setValue(Dimensions.get('window').width);
     }
   }, [previewUri, previewSlideAnim]);
-
-  console.log('[MediaViewer] render', {
-    visible,
-    imagesCount: images.length,
-    videosCount: videos.length,
-    taskId: taskMeta?.id || taskMeta?.taskId || '(empty)',
-    imagesArray: images,
-    videosArray: videos,
-  });
   const [previewUri, setPreviewUri] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [downloadingUri, setDownloadingUri] = useState('');
-  const [downloadingLatLngUri, setDownloadingLatLngUri] = useState('');
+  const [sharingUri, setSharingUri] = useState('');
+  const [sharingLatLngUri, setSharingLatLngUri] = useState('');
   const [toastState, setToastState] = useState(null);
   const [videoThumbnails, setVideoThumbnails] = useState({});
   const toastTimerRef = React.useRef(null);
@@ -238,14 +227,8 @@ const MediaViewer = ({
       clearTimeout(toastTimerRef.current);
     }
     if (typeof message !== 'string' || !message.trim()) {
-      console.log('[MediaViewer] toast skipped - empty message');
       return;
     }
-
-    console.log('[MediaViewer] toast show', {
-      variant,
-      message: message.trim(),
-    });
     setToastState({ message: message.trim(), variant });
     toastTimerRef.current = setTimeout(() => {
       setToastState(null);
@@ -254,16 +237,12 @@ const MediaViewer = ({
 
   useEffect(() => {
     if (!visible) {
-      console.log('[MediaViewer] closed');
       setPreviewUri('');
-      setDownloadingUri('');
-      setDownloadingLatLngUri('');
+      setSharingUri('');
+      setSharingLatLngUri('');
       setToastState(null);
       return;
     }
-
-    console.log('[MediaViewer] taskMeta:', taskMeta);
-    console.log('[MediaViewer] latLng:', latLng || '(missing)');
 
     return () => {
       if (toastTimerRef.current) {
@@ -274,7 +253,6 @@ const MediaViewer = ({
 
   const imageItems = useMemo(
     () => {
-      console.log('[MediaViewer] mapping imageItems from:', images);
       return images
         .map((uri, index) => {
           if (typeof uri !== 'string' || !uri.trim()) {
@@ -297,7 +275,6 @@ const MediaViewer = ({
 
   const videoItems = useMemo(
     () => {
-      console.log('[MediaViewer] mapping videoItems from:', videos);
       return videos
         .map((uri, index) => {
           if (typeof uri !== 'string' || !uri.trim()) {
@@ -322,38 +299,30 @@ const MediaViewer = ({
 
   useEffect(() => {
     let isMounted = true;
-    console.log('[MediaViewer] thumbnail build check', {
-      videoCount: videoItems.length,
-    });
 
     const buildThumbnails = async () => {
       const nextThumbs = {};
-      console.log('[MediaViewer] thumbnail build start');
 
       await Promise.all(
         videoItems.map(async item => {
           try {
             // Wrap createVideoThumbnail in a timeout to prevent it from hanging the bridge/network
             const thumbnailPromise = createVideoThumbnail(item.uri);
-            const timeoutPromise = new Promise((_, reject) => 
+            const timeoutPromise = new Promise((_, reject) =>
               setTimeout(() => reject(new Error('Thumbnail generation timed out')), 5000)
             );
             const result = await Promise.race([thumbnailPromise, timeoutPromise]);
-            
+
             if (result?.path && isMounted) {
               nextThumbs[item.uri] = result.path;
             }
           } catch (error) {
-            console.log('[MediaViewer] Thumbnail generation failed/timed out for', item.uri, error);
           }
         }),
       );
 
       if (isMounted) {
         setVideoThumbnails(nextThumbs);
-        console.log('[MediaViewer] thumbnail build complete', {
-          count: Object.keys(nextThumbs).length,
-        });
       }
     };
 
@@ -372,114 +341,160 @@ const MediaViewer = ({
     return null;
   }
 
-  const handleDownload = async (item, options = {}) => {
+  const prepareShareableUri = async item => {
     if (!item?.uri) {
-      console.log('[MediaViewer] download skipped - missing uri');
+      throw new Error('Missing media uri.');
+    }
+
+    // If already a local file URI, return as-is
+    if (item.uri.startsWith('file://') || item.uri.startsWith('content://')) {
+      return item.uri;
+    }
+
+    const rawFileName = item.fileName || `media_${Date.now()}`;
+    const baseName = rawFileName.replace(/\.[^.]+$/, '');
+    const extension =
+      rawFileName.substring(rawFileName.lastIndexOf('.')) ||
+      (item.type === 'video' ? '.mp4' : '.jpg');
+    const safeTaskId = String(taskMeta?.taskId || taskMeta?.id || 'Task').replace(
+      /[^a-zA-Z0-9]/g,
+      '_',
+    );
+    const safeKey = String(taskMeta?.key || taskMeta?.mediaKey || '1').replace(
+      /[^a-zA-Z0-9]/g,
+      '_',
+    );
+    const taskTimeRaw = String(taskMeta?._at || taskMeta?.date || '').replace(
+      /[^a-zA-Z0-9]/g,
+      '',
+    );
+    const timeSuffix = taskTimeRaw ? `_${taskTimeRaw}` : '';
+    const safeFileName = `${safeTaskId}_${safeKey}${timeSuffix}_${baseName}${extension}`.replace(
+      /[^a-zA-Z0-9.\-_]/g,
+      '_',
+    );
+    const shareDir = `${RNFS.CachesDirectoryPath}/media_share`;
+
+    // Ensure directory exists
+    const dirExists = await RNFS.exists(shareDir);
+    if (!dirExists) {
+      await RNFS.mkdir(shareDir);
+    }
+
+    const destination = `${shareDir}/${safeFileName}`;
+
+    const result = await RNFS.downloadFile({
+      fromUrl: item.uri,
+      toFile: destination,
+      background: false,
+      readTimeout: 60000,
+      connectionTimeout: 30000,
+      discretionary: false,
+    }).promise;
+
+    if (result.statusCode !== 200) {
+      throw new Error(`Share preparation failed with status ${result.statusCode}`);
+    }
+
+    // Verify the file was downloaded
+    const fileInfo = await RNFS.stat(destination);
+
+    if (!fileInfo?.size || fileInfo.size === 0) {
+      throw new Error('Downloaded file is empty');
+    }
+
+    // Use file:// URI for sharing
+    const shareableUri = `file://${destination}`;
+
+    return shareableUri;
+  };
+
+  const handleShare = async (item, options = {}) => {
+    if (!item?.uri) {
       return;
     }
 
     const { withLatLng = false } = options;
-    console.log('[MediaViewer] download start', {
-      id: item?.id || '(empty)',
-      type: item?.type || '(empty)',
-      withLatLng,
-      fileName: item?.fileName || '(auto)',
-    });
 
     try {
       if (withLatLng) {
-        setDownloadingLatLngUri(item.uri);
+        setSharingLatLngUri(item.uri);
       } else {
-        setDownloadingUri(item.uri);
+        setSharingUri(item.uri);
       }
 
-      const rawFileName = item.fileName || `media_${Date.now()}`;
-      const baseName = rawFileName.replace(/\.[^.]+$/, '');
-      const extension = rawFileName.substring(rawFileName.lastIndexOf('.'));
-      
-      const safeTaskId = String(taskMeta?.taskId || taskMeta?.id || 'Task').replace(/[^a-zA-Z0-9]/g, '_');
-      const safeKey = String(taskMeta?.key || taskMeta?.mediaKey || '1').replace(/[^a-zA-Z0-9]/g, '_');
-      const taskTimeRaw = String(taskMeta?._at || taskMeta?.date || '').replace(/[^a-zA-Z0-9]/g, '');
-      const timeSuffix = taskTimeRaw ? `_${taskTimeRaw}` : '';
-      
-      const finalName =
-        withLatLng && item.type === 'image'
-          ? `Edited_${safeTaskId}_${safeKey}${timeSuffix}_${baseName}.jpg`
-          : `${safeTaskId}_${safeKey}${timeSuffix}_${baseName}${extension}`;
-
       if (withLatLng && item.type === 'image') {
-        if (!latLng || !MediaDownload?.downloadImageWithLatLng) {
-          throw new Error('Lat/Lng download is not available right now.');
+        if (!latLng) {
+          throw new Error('Lat/Lng share is not available right now.');
         }
 
         const [latitude = '', longitude = ''] = latLng.split(',');
-        const savedLocation = await MediaDownload.downloadImageWithLatLng(
-          item.uri,
-          String(latitude).trim(),
-          String(longitude).trim(),
-          finalName,
-          taskMeta?.address ?? '',
-          taskMeta?._at ?? taskMeta?.date ?? '',
-        );
-        showToast('Image saved with Lat/Lng', 'success');
-        console.log('[MediaViewer] Saved with Lat/Lng at', savedLocation);
-      } else {
-        const safeDownloadsDir = RNFS.DownloadDirectoryPath || `${RNFS.ExternalStorageDirectoryPath}/Download`;
-        
-        // Ensure the directory exists to prevent 'No such file or directory' errors
-        const dirExists = await RNFS.exists(safeDownloadsDir);
-        if (!dirExists) {
-          try {
-            await RNFS.mkdir(safeDownloadsDir);
-          } catch (e) {
-            console.log('[MediaViewer] Failed to create download dir, falling back to Documents', e);
-          }
-        }
-
-        // If it still doesn't exist, fallback to DocumentDirectoryPath which is always accessible
-        const finalDir = (await RNFS.exists(safeDownloadsDir)) ? safeDownloadsDir : RNFS.DocumentDirectoryPath;
-        
-        if (!finalDir) {
-          throw new Error('Download folder is not available on this device.');
-        }
-
-        const safeFileName = finalName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-        const destination = `${finalDir}/${safeFileName}`;
-        
-        const result = await RNFS.downloadFile({
-          fromUrl: item.uri,
-          toFile: destination,
-          background: false, // background: true can cause timeouts on Android
-          readTimeout: 60000,
-          connectionTimeout: 30000,
-          discretionary: false,
-        }).promise;
-
-        if (result.statusCode === 200) {
-          console.log('[MediaViewer] download success', {
-            destination,
-            statusCode: result.statusCode,
-          });
-          showToast(`${finalName} saved to Downloads`, 'success');
+        const finalName = `Edited_${String(
+          taskMeta?.taskId || taskMeta?.id || 'Task',
+        ).replace(/[^a-zA-Z0-9]/g, '_')}.jpg`;
+        if (Platform.OS === 'android' && MediaDownload?.shareImageWithLatLng) {
+          await MediaDownload.shareImageWithLatLng(
+            item.uri,
+            String(latitude).trim(),
+            String(longitude).trim(),
+            finalName,
+            taskMeta?.address ?? '',
+            taskMeta?._at ?? taskMeta?.date ?? '',
+            '',
+          );
         } else {
-          throw new Error(`Download failed with status ${result.statusCode}`);
+          const sharedLocation = await MediaDownload.downloadImageWithLatLng(
+            item.uri,
+            String(latitude).trim(),
+            String(longitude).trim(),
+            finalName,
+            taskMeta?.address ?? '',
+            taskMeta?._at ?? taskMeta?.date ?? '',
+          );
+          await Share.share({
+            url: sharedLocation,
+            type: 'image/jpeg',
+          });
+        }
+        showToast('Image shared with Lat/Lng', 'success');
+      } else {
+        if (item.type === 'image' && Platform.OS === 'android' && MediaDownload?.shareImageForUrl) {
+          const finalName = `Share_${String(
+            taskMeta?.taskId || taskMeta?.id || 'Task',
+          ).replace(/[^a-zA-Z0-9]/g, '_')}_${item.id || Date.now()}.jpg`;
+          await MediaDownload.shareImageForUrl(
+            item.uri,
+            finalName,
+            '',
+          );
+          showToast('Image shared', 'success');
+        } else if (item.type === 'video' && Platform.OS === 'android' && MediaDownload?.shareMediaForUrl) {
+          const finalName = `Share_${String(
+            taskMeta?.taskId || taskMeta?.id || 'Task',
+          ).replace(/[^a-zA-Z0-9]/g, '_')}_${item.id || Date.now()}.mp4`;
+          await MediaDownload.shareMediaForUrl(
+            item.uri,
+            finalName,
+            'video/mp4',
+          );
+          showToast('Video shared', 'success');
+        } else {
+          const shareUri = await prepareShareableUri(item);
+          await Share.share({
+            url: shareUri,
+            type: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
+          });
+          showToast('Media ready to share', 'success');
         }
       }
     } catch (error) {
-      console.log('[MediaViewer] download failed', {
-        message: error?.message || '(no message)',
-        raw: error,
-      });
-      showToast(error?.message || 'Download failed', 'error');
+      showToast(error?.message || 'Share failed', 'error');
     } finally {
       if (withLatLng) {
-        setDownloadingLatLngUri('');
+        setSharingLatLngUri('');
       } else {
-        setDownloadingUri('');
+        setSharingUri('');
       }
-      console.log('[MediaViewer] download end', {
-        withLatLng,
-      });
     }
   };
 
@@ -522,14 +537,14 @@ const MediaViewer = ({
             key={item.id}
             item={item}
             index={index}
-            downloading={downloadingUri === item.uri}
-            downloadingWithLatLng={downloadingLatLngUri === item.uri}
+            sharing={sharingUri === item.uri}
+            sharingWithLatLng={sharingLatLngUri === item.uri}
             showLatLngOptions={kind === 'image' && hasLatLng}
             videoThumbnailUri={videoThumbnails[item.uri]}
             onPreview={() => setPreviewUri(item.uri)}
-            onDownload={() => handleDownload(item)}
+            onShare={() => handleShare(item)}
             onDownloadWithLatLng={() =>
-              handleDownload(item, { withLatLng: true })
+              handleShare(item, { withLatLng: true })
             }
           />
         ))}
@@ -553,144 +568,144 @@ const MediaViewer = ({
         }}
       >
         <View style={styles.backdrop}>
-        <StatusBar
-          barStyle="dark-content"
-          backgroundColor={appTheme.colors.neutral.background}
-          translucent={false}
-        />
-        <SafeAreaView
-          style={styles.safeArea}
-          edges={['top', 'left', 'right']}
-        >
-          <View style={styles.container}>
-            <View style={styles.headerShell}>
-              <View style={styles.headerTextBlock}>
-                <Text style={styles.headerTitle}>
-                  Images and videos from the task
-                </Text>
-                <Text style={styles.headerSubtitle}>
-                  {imageItems.length} photos
-                  {videoItems.length ? ` • ${videoItems.length} videos` : ''}
-                </Text>
-              </View>
-              <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-                <MaterialCommunityIcons name="close" size={18} color="#fff" />
-              </TouchableOpacity>
-            </View>
-
-
-            <ScrollView
-              contentContainerStyle={styles.content}
-              showsVerticalScrollIndicator={false}
-            >
-              {renderSection('Images', imageItems, 'image')}
-              {renderSection('Videos', videoItems, 'video')}
-              {!imageItems.length && !videoItems.length ? renderEmpty() : null}
-            </ScrollView>
-          </View>
-        </SafeAreaView>
-
-        <Modal
-          visible={!!previewUri}
-          transparent
-          animationType="none"
-          onRequestClose={() => setPreviewUri('')}
-        >
-          <View style={styles.previewBackdrop}>
-            <Animated.View
-              style={[
-                styles.previewCard,
-                { transform: [{ translateX: previewSlideAnim }] },
-              ]}
-            >
-              <View style={styles.previewTopBar}>
-                <View style={styles.previewTitleBlock}>
-                  <Text style={styles.previewEyebrow}>Image Preview</Text>
-                  <Text style={styles.previewTitle} numberOfLines={1}>
-                    {previewUri ? 'Media from task' : ''}
+          <StatusBar
+            barStyle="dark-content"
+            backgroundColor={appTheme.colors.neutral.background}
+            translucent={false}
+          />
+          <SafeAreaView
+            style={styles.safeArea}
+            edges={['top', 'left', 'right']}
+          >
+            <View style={styles.container}>
+              <View style={styles.headerShell}>
+                <View style={styles.headerTextBlock}>
+                  <Text style={styles.headerTitle}>
+                    Images and videos from the task
+                  </Text>
+                  <Text style={styles.headerSubtitle}>
+                    {imageItems.length} photos
+                    {videoItems.length ? ` • ${videoItems.length} videos` : ''}
                   </Text>
                 </View>
-                <Pressable
-                  style={styles.previewCloseButton}
-                  onPress={() => setPreviewUri('')}
-                >
-                  <MaterialCommunityIcons
-                    name="close"
-                    size={18}
-                    color="#fff"
-                  />
-                </Pressable>
+                <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+                  <MaterialCommunityIcons name="close" size={18} color="#fff" />
+                </TouchableOpacity>
               </View>
-              <View style={styles.previewFrame}>
-                {previewUri ? (
-                  <>
-                    {previewLoading && (
-                      <View style={styles.previewLoader}>
-                        <ActivityIndicator size="large" color="#fff" />
-                      </View>
-                    )}
-                    <Image
-                      source={{ uri: previewUri }}
-                      style={styles.previewImage}
-                      onLoadStart={() => setPreviewLoading(true)}
-                      onLoadEnd={() => setPreviewLoading(false)}
-                    />
-                  </>
-                ) : null}
-              </View>
-            </Animated.View>
-          </View>
-        </Modal>
 
-        <Modal
-          transparent
-          visible={hasToast}
-          animationType="fade"
-          onRequestClose={() => setToastState(null)}
-        >
-          <View style={styles.toastOverlay} pointerEvents="box-none">
-            <View
-              style={[styles.toastWrap, { top: insets.top + 14 }]}
-              pointerEvents="none"
-            >
-              <View
+
+              <ScrollView
+                contentContainerStyle={styles.content}
+                showsVerticalScrollIndicator={false}
+              >
+                {renderSection('Images', imageItems, 'image')}
+                {renderSection('Videos', videoItems, 'video')}
+                {!imageItems.length && !videoItems.length ? renderEmpty() : null}
+              </ScrollView>
+            </View>
+          </SafeAreaView>
+
+          <Modal
+            visible={!!previewUri}
+            transparent
+            animationType="none"
+            onRequestClose={() => setPreviewUri('')}
+          >
+            <View style={styles.previewBackdrop}>
+              <Animated.View
                 style={[
-                  styles.toastCard,
-                  {
-                    borderColor: toastTheme.borderColor,
-                    backgroundColor: toastTheme.surfaceBg,
-                  },
+                  styles.previewCard,
+                  { transform: [{ translateX: previewSlideAnim }] },
                 ]}
+              >
+                <View style={styles.previewTopBar}>
+                  <View style={styles.previewTitleBlock}>
+                    <Text style={styles.previewEyebrow}>Image Preview</Text>
+                    <Text style={styles.previewTitle} numberOfLines={1}>
+                      {previewUri ? 'Media from task' : ''}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={styles.previewCloseButton}
+                    onPress={() => setPreviewUri('')}
+                  >
+                    <MaterialCommunityIcons
+                      name="close"
+                      size={18}
+                      color="#fff"
+                    />
+                  </Pressable>
+                </View>
+                <View style={styles.previewFrame}>
+                  {previewUri ? (
+                    <>
+                      {previewLoading && (
+                        <View style={styles.previewLoader}>
+                          <ActivityIndicator size="large" color="#fff" />
+                        </View>
+                      )}
+                      <Image
+                        source={{ uri: previewUri }}
+                        style={styles.previewImage}
+                        onLoadStart={() => setPreviewLoading(true)}
+                        onLoadEnd={() => setPreviewLoading(false)}
+                      />
+                    </>
+                  ) : null}
+                </View>
+              </Animated.View>
+            </View>
+          </Modal>
+
+          <Modal
+            transparent
+            visible={hasToast}
+            animationType="fade"
+            onRequestClose={() => setToastState(null)}
+          >
+            <View style={styles.toastOverlay} pointerEvents="box-none">
+              <View
+                style={[styles.toastWrap, { top: insets.top + 14 }]}
+                pointerEvents="none"
               >
                 <View
                   style={[
-                    styles.toastAccent,
-                    { backgroundColor: toastTheme.accentColor },
-                  ]}
-                />
-                <View
-                  style={[
-                    styles.toastIconWrap,
-                    { backgroundColor: toastTheme.iconBg },
+                    styles.toastCard,
+                    {
+                      borderColor: toastTheme.borderColor,
+                      backgroundColor: toastTheme.surfaceBg,
+                    },
                   ]}
                 >
-                  <MaterialCommunityIcons
-                    name={toastTheme.icon}
-                    size={18}
-                    color={toastTheme.accentColor}
+                  <View
+                    style={[
+                      styles.toastAccent,
+                      { backgroundColor: toastTheme.accentColor },
+                    ]}
                   />
-                </View>
-                <View style={styles.toastTextWrap}>
-                  <Text style={styles.toastTitle}>{toastTheme.label}</Text>
-                  <Text style={styles.toastText} numberOfLines={2}>
-                    {toastMessage}
-                  </Text>
+                  <View
+                    style={[
+                      styles.toastIconWrap,
+                      { backgroundColor: toastTheme.iconBg },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name={toastTheme.icon}
+                      size={18}
+                      color={toastTheme.accentColor}
+                    />
+                  </View>
+                  <View style={styles.toastTextWrap}>
+                    <Text style={styles.toastTitle}>{toastTheme.label}</Text>
+                    <Text style={styles.toastText} numberOfLines={2}>
+                      {toastMessage}
+                    </Text>
+                  </View>
                 </View>
               </View>
             </View>
-          </View>
-        </Modal>
-      </View>
+          </Modal>
+        </View>
       </Animated.View>
     </Modal>
   );

@@ -62,7 +62,6 @@ const clearTaskCache = async () => {
       await AsyncStorage.multiRemove(taskKeys);
     }
   } catch (error) {
-    console.error('[taskCacheService] Failed to clear cache', error);
   }
 };
 

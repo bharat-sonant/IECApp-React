@@ -52,8 +52,6 @@ export const cacheMedia = async (url, onProgress) => {
     const hash = getHash(url);
     const ext = url.includes('.mp4') ? 'mp4' : 'jpg';
     const cachedPath = `${MEDIA_CACHE_DIR}/${hash}.${ext}`;
-
-    console.log('[MediaCache] Caching:', url, '->', cachedPath);
     const exists = await RNFS.exists(cachedPath);
     if (exists) {
       return cachedPath;

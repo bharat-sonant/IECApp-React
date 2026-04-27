@@ -312,7 +312,6 @@ export const saveTaskSubmission = async ({
         payload.address = locResult.location?.address || payload.address || STATIC_LOCATION.address;
       }
     } catch (e) {
-      console.log('[taskService] secondary location fetch failed', e);
     }
   }
 
@@ -327,11 +326,6 @@ export const saveTaskSubmission = async ({
       'Location capture failed. Please enable GPS and try again before submitting.',
     );
   }
-
-  console.log('[taskService] final payload location before save:', {
-    latLng: payload.latLng,
-    address: payload.address,
-  });
 
   // Save ONLY filename to DB (path will be constructed when reading)
   normalizedImages.forEach((_, index) => {

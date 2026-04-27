@@ -1,6 +1,7 @@
 package com.iecapp
 
 import android.content.ContentValues
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -22,6 +23,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -94,6 +96,92 @@ class MediaDownloadModule(private val reactContext: ReactApplicationContext) :
         promise.resolve(savedPath)
       } catch (e: Exception) {
         promise.reject("MEDIA_DOWNLOAD_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun downloadImageForShare(
+    imageUrl: String,
+    fileName: String,
+    promise: Promise
+  ) {
+    Thread {
+      try {
+        val sourceBitmap = downloadBitmap(imageUrl)
+        val savedPath = saveBitmapToDownloads(sourceBitmap, fileName)
+        promise.resolve(savedPath)
+      } catch (e: Exception) {
+        promise.reject("MEDIA_SHARE_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun shareImageForUrl(
+    imageUrl: String,
+    fileName: String,
+    message: String?,
+    promise: Promise
+  ) {
+    Thread {
+      try {
+        val sourceBitmap = downloadBitmap(imageUrl)
+        val shareUri = shareBitmap(sourceBitmap, fileName, message.orEmpty())
+        promise.resolve(shareUri)
+      } catch (e: Exception) {
+        promise.reject("MEDIA_SHARE_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun shareImageWithLatLng(
+    imageUrl: String,
+    latitude: String,
+    longitude: String,
+    fileName: String,
+    address: String?,
+    dateText: String?,
+    message: String?,
+    promise: Promise
+  ) {
+    Thread {
+      try {
+        val sourceBitmap = downloadBitmap(imageUrl)
+        val resolvedAddress = resolveAddressFromLatLng(
+          latitude,
+          longitude,
+          address.orEmpty()
+        )
+        val markedBitmap = addLatLngToBitmap(
+          sourceBitmap,
+          latitude,
+          longitude,
+          resolvedAddress,
+          dateText.orEmpty()
+        )
+        val shareUri = shareBitmap(markedBitmap, fileName, message.orEmpty())
+        promise.resolve(shareUri)
+      } catch (e: Exception) {
+        promise.reject("MEDIA_SHARE_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun shareMediaForUrl(
+    mediaUrl: String,
+    fileName: String,
+    mimeType: String?,
+    promise: Promise
+  ) {
+    Thread {
+      try {
+        val localUri = shareDownloadedMedia(mediaUrl, fileName, mimeType.orEmpty())
+        promise.resolve(localUri)
+      } catch (e: Exception) {
+        promise.reject("MEDIA_SHARE_FAILED", e.message, e)
       }
     }.start()
   }
@@ -318,6 +406,139 @@ class MediaDownloadModule(private val reactContext: ReactApplicationContext) :
     } else {
       saveToLegacyDownloads(bitmap, finalName)
     }
+  }
+
+  private fun shareBitmap(bitmap: Bitmap, fileName: String, message: String): String {
+    val filesDir = File(reactContext.filesDir, "shared_images")
+    if (!filesDir.exists()) {
+      filesDir.mkdirs()
+    }
+
+    val safeName = sanitizeFileName(fileName).ifBlank {
+      "shared_${System.currentTimeMillis()}.jpg"
+    }
+    val finalName = if (safeName.lowercase(Locale.US).endsWith(".jpg")) {
+      safeName
+    } else {
+      "$safeName.jpg"
+    }
+
+    val outFile = File(filesDir, finalName)
+    FileOutputStream(outFile).use { output ->
+      if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 100, output)) {
+        throw IllegalStateException("Unable to write image for sharing")
+      }
+    }
+
+    val uri = FileProvider.getUriForFile(
+      reactContext,
+      "${reactContext.packageName}.fileprovider",
+      outFile
+    )
+
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+      type = "image/jpeg"
+      putExtra(Intent.EXTRA_STREAM, uri)
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      clipData = android.content.ClipData.newRawUri("shared_image", uri)
+    }
+
+    val chooser = Intent.createChooser(shareIntent, "Share image").apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    reactContext.runOnUiQueueThread {
+      val activity = reactContext.currentActivity
+      if (activity != null) {
+        activity.startActivity(chooser)
+      } else {
+        reactContext.startActivity(chooser)
+      }
+    }
+
+    return uri.toString()
+  }
+
+  private fun shareDownloadedMedia(mediaUrl: String, fileName: String, mimeType: String): String {
+    val filesDir = File(reactContext.filesDir, "shared_images")
+    if (!filesDir.exists()) {
+      filesDir.mkdirs()
+    }
+
+    val safeName = sanitizeFileName(fileName).ifBlank {
+      "shared_${System.currentTimeMillis()}"
+    }
+    val extension = when {
+      safeName.contains('.') -> ""
+      mimeType.contains("video", ignoreCase = true) -> ".mp4"
+      mimeType.contains("png", ignoreCase = true) -> ".png"
+      else -> ".jpg"
+    }
+    val finalName = if (safeName.endsWith(extension, ignoreCase = true) || extension.isEmpty()) {
+      safeName
+    } else {
+      "$safeName$extension"
+    }
+
+    val outFile = File(filesDir, finalName)
+    downloadToFile(mediaUrl, outFile)
+
+    val normalizedMimeType = when {
+      mimeType.isNotBlank() -> mimeType
+      finalName.lowercase(Locale.US).endsWith(".mp4") -> "video/mp4"
+      finalName.lowercase(Locale.US).endsWith(".png") -> "image/png"
+      else -> "image/jpeg"
+    }
+
+    return shareLocalFile(outFile, normalizedMimeType)
+  }
+
+  private fun downloadToFile(mediaUrl: String, outFile: File) {
+    val connection = URL(mediaUrl).openConnection() as HttpURLConnection
+    connection.connectTimeout = 15000
+    connection.readTimeout = 15000
+    connection.instanceFollowRedirects = true
+    connection.connect()
+
+    if (connection.responseCode !in 200..299) {
+      throw IllegalStateException("Download failed with status ${connection.responseCode}")
+    }
+
+    connection.inputStream.use { input ->
+      FileOutputStream(outFile).use { output ->
+        input.copyTo(output)
+      }
+    }
+  }
+
+  private fun shareLocalFile(outFile: File, mimeType: String): String {
+    val uri = FileProvider.getUriForFile(
+      reactContext,
+      "${reactContext.packageName}.fileprovider",
+      outFile
+    )
+
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+      type = mimeType
+      putExtra(Intent.EXTRA_STREAM, uri)
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      clipData = android.content.ClipData.newRawUri("shared_media", uri)
+    }
+
+    val chooser = Intent.createChooser(shareIntent, "Share media").apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    reactContext.runOnUiQueueThread {
+      val activity = reactContext.currentActivity
+      if (activity != null) {
+        activity.startActivity(chooser)
+      } else {
+        reactContext.startActivity(chooser)
+      }
+    }
+
+    return uri.toString()
   }
 
   private fun saveToMediaStore(bitmap: Bitmap, fileName: String): String {

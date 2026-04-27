@@ -97,17 +97,6 @@ export const checkForUpdates = async (
       return false;
     }
 
-    console.log('[OTA] version-check', {
-      dbVersion,
-      installedAppVersion,
-      latestVersion: normalizedLatestVersion,
-      releaseTag: latestVersion,
-      shouldForceRefreshDb,
-      hasDbVersion: Boolean(dbVersion),
-      hasInstalledVersion: Boolean(installedAppVersion),
-      platform: Platform.OS,
-    });
-
     if (Platform.OS === 'android') {
       const skipNativeExit = Boolean(options?.skipNativeExit);
       const hasDbVersion = Boolean(dbVersion);
@@ -120,11 +109,6 @@ export const checkForUpdates = async (
           installedAppVersion !== normalizedLatestVersion);
 
       if (hasDbVersion && hasInstalledVersion && hasNativeVersionMismatch) {
-        console.log('[OTA] native version mismatch detected', {
-          dbVersion,
-          installedAppVersion,
-          latestVersion: normalizedLatestVersion,
-        });
         onUpdateFound?.(
           latestVersion,
           'Your app is outdated. Please install the new APK to continue.',
@@ -152,10 +136,6 @@ export const checkForUpdates = async (
         releaseData.assets.find(asset => asset.name === 'index.android.bundle');
 
       if (otaPackageAsset) {
-        console.log('[OTA] bundle asset found', {
-          assetName: otaPackageAsset.name,
-          assetId: otaPackageAsset?.id ?? null,
-        });
         const latestBundleAssetId = otaPackageAsset?.id
           ? String(otaPackageAsset.id)
           : null;
@@ -168,10 +148,6 @@ export const checkForUpdates = async (
         );
 
         if (!shouldOfferJsUpdate) {
-          console.log('[OTA] JS update skipped because asset id is unchanged', {
-            latestBundleAssetId,
-            storedBundleAssetId,
-          });
           return false;
         }
 

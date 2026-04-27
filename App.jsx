@@ -17,6 +17,7 @@ import appTheme from './src/theme/appTheme';
 import { validateAppVersion } from './src/services/loginService';
 import { initializeFirebaseApp } from './src/firebase/firebaseService';
 import { flushPendingMediaUploads } from './src/services/pendingUploadService';
+import { ensureSharedMediaCleanup } from './src/services/sharedMediaService';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import {
   getAppStateSuppressionRemainingMs,
@@ -36,17 +37,11 @@ const VersionGate = ({ onReady }) => {
     const checkVersion = async (reason = 'mount') => {
       setIsCheckingVersion(true);
       try {
-        console.log('[VersionGate] check start', { reason });
         await initializeFirebaseApp();
         const result = await validateAppVersion();
         if (!isMounted) {
           return;
         }
-
-        console.log('[VersionGate] check result', {
-          reason,
-          ok: Boolean(result?.ok),
-        });
 
         if (result.ok) {
           versionAlertShownRef.current = false;
@@ -75,10 +70,6 @@ const VersionGate = ({ onReady }) => {
           ],
         });
       } catch (error) {
-        console.log('[VersionGate] check failed', {
-          reason,
-          message: error?.message || '(no message)',
-        });
       } finally {
         if (isMounted) {
           setIsCheckingVersion(false);
@@ -119,15 +110,13 @@ export default function App() {
 
     const runAppStateWork = async reason => {
       try {
-        console.log('[AppState] work start', { reason });
         await initializeFirebaseApp();
-        await Promise.all([validateAppVersion(), flushPendingMediaUploads()]);
-        console.log('[AppState] work complete', { reason });
+        await Promise.all([
+          validateAppVersion(),
+          flushPendingMediaUploads(),
+          ensureSharedMediaCleanup(),
+        ]);
       } catch (error) {
-        console.log('[AppState] work failed', {
-          reason,
-          message: error?.message || '(no message)',
-        });
       }
     };
 
@@ -148,11 +137,6 @@ export default function App() {
         ? getAppStateSuppressionRemainingMs() + 1200
         : Math.max(0, cooldownMs - (now - lastRunAt)) || 1200;
       const finalDelay = Math.min(Math.max(delay, 400), 15000);
-      console.log('[AppState] work scheduled', {
-        reason,
-        suppressed,
-        finalDelay,
-      });
 
       activeWorkTimer = setTimeout(async () => {
         activeWorkTimer = null;
@@ -179,7 +163,6 @@ export default function App() {
         clearTimeout(activeWorkTimer);
       }
       subscription.remove();
-      console.log('[AppState] listener cleanup');
     };
   }, [isVersionReady]);
 
@@ -195,7 +178,6 @@ export default function App() {
             {!isVersionReady ? (
               <VersionGate
                 onReady={() => {
-                  console.log('[App] version gate ready');
                   setIsVersionReady(true);
                 }}
               />
@@ -206,18 +188,11 @@ export default function App() {
                   const currentRoute =
                     navigationRef.current?.getCurrentRoute?.()?.name ?? '';
                   routeNameRef.current = currentRoute;
-                  console.log('[Navigator] ready', {
-                    route: currentRoute || '(none)',
-                  });
                 }}
                 onStateChange={() => {
                   const currentRoute =
                     navigationRef.current?.getCurrentRoute?.()?.name ?? '';
                   if (currentRoute && routeNameRef.current !== currentRoute) {
-                    console.log('[Navigator] route changed', {
-                      from: routeNameRef.current || '(none)',
-                      to: currentRoute,
-                    });
                     routeNameRef.current = currentRoute;
                   }
                 }}

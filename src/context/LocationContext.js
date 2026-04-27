@@ -84,7 +84,6 @@ export const LocationProvider = ({ children }) => {
 
       // start native tracking - listeners are already listening
       startLocationTracking();
-      console.log('[LocationService] Tracking started for employee:', empId);
 
       stopTrackingRef.current = () => {
         unsubLocation();

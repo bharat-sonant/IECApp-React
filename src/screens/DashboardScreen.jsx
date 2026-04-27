@@ -28,6 +28,7 @@ import {
   clearLoginSession,
   loadLoginSession,
 } from '../services/sessionService';
+import { clearSharedMediaFiles } from '../services/sharedMediaService';
 import { clearMediaCache } from '../services/mediaCacheService';
 import { useAppFeedback } from '../components/AppFeedback';
 import { useLocation } from '../context/LocationContext';
@@ -508,6 +509,45 @@ const buildDisplayableCurrentTasks = tasks =>
       sourceLabel: 'Current',
       taskDate: getFirstText(task.taskDate, task.raw?._at) || task.taskDate,
     }));
+
+// Filter to show only active (non-deleted) tasks
+// Check status and isDeleted from task catalog (IECData/Tasks)
+const filterActiveTasks = (tasks, taskCatalog = {}) => {
+  if (!Array.isArray(tasks)) return [];
+
+  return tasks.filter(task => {
+    // Get the task from catalog using taskId
+    const taskId = task.taskId || task.resolvedTaskId;
+    const catalogTask = taskCatalog[taskId];
+
+    if (!catalogTask) {
+      // If catalog task not found, allow task to show (don't filter)
+      return true;
+    }
+
+    // Check isDeleted from catalog
+    const isDeleted = String(
+      catalogTask?.isDeleted ??
+      catalogTask?.IsDeleted ??
+      '',
+    ).toLowerCase();
+
+    // Skip if deleted
+    if (isDeleted === 'yes') {
+      return false;
+    }
+
+    // Check status from catalog
+    const catalogStatus = String(
+      catalogTask?.status ??
+      catalogTask?.Status ??
+      ''
+    );
+
+    // Only show tasks where status is '1' (active)
+    return catalogStatus === '1';
+  });
+};
 
 const getTaskStatusRank = status => {
   const normalized = getFirstText(status).toLowerCase();
@@ -1069,18 +1109,6 @@ const DashboardScreen = ({ navigation }) => {
   };
 
   useEffect(() => {
-    console.log('[Dashboard] render state', {
-      employeeName,
-      loginId: loginId || '(empty)',
-      tasksCount: tasks.length,
-      tasksLoading,
-      tasksError: tasksError || '(none)',
-      menuOpen,
-      fabOpen,
-      actionModalVisible,
-      actionModalMode,
-      hasActionTask: Boolean(actionModalTask),
-    });
   }, [
     actionModalMode,
     actionModalTask,
@@ -1111,13 +1139,11 @@ const DashboardScreen = ({ navigation }) => {
   useEffect(() => {
     let isActive = true;
     const startedAt = Date.now();
-    console.log('[Dashboard] session hydrate start');
 
     const hydrateSession = async () => {
       try {
         const session = await loadLoginSession();
         if (!isActive || !session) {
-          console.log('[Dashboard] session missing or inactive');
           return;
         }
 
@@ -1137,14 +1163,10 @@ const DashboardScreen = ({ navigation }) => {
           session.employee?.id ||
           '',
         );
-        console.log('[Dashboard] session hydrated', {
-          loginId: session.loginId || session.employee?.userId || session.employee?.id || '',
-        });
       } catch {
         if (isActive) {
           setEmployeeName('Employee');
           setLoginId('');
-          console.log('[Dashboard] session hydrate failed, fallback applied');
         }
       }
     };
@@ -1153,18 +1175,12 @@ const DashboardScreen = ({ navigation }) => {
 
     return () => {
       isActive = false;
-      console.log('[Dashboard] session hydrate cleanup', {
-        elapsedMs: Date.now() - startedAt,
-      });
     };
   }, []);
 
   useEffect(() => {
     let isActive = true;
     const startedAt = Date.now();
-    console.log('[Dashboard] task load scheduled', {
-      loginId: loginId || '(empty)',
-    });
 
     const loadTasks = async () => {
       if (!loginId) {
@@ -1173,13 +1189,11 @@ const DashboardScreen = ({ navigation }) => {
           setTasksError('');
           setTasksLoading(false);
         }
-        console.log('[Dashboard] task load skipped - missing loginId');
         return;
       }
 
       setTasksLoading(true);
       setTasksError('');
-      console.log('[Dashboard] task load begin', { loginId });
 
       const dateParts = getCurrentDateParts();
 
@@ -1187,12 +1201,10 @@ const DashboardScreen = ({ navigation }) => {
       try {
         const cached = await readDashboardTaskCache(loginId, dateParts.isoDate);
         if (cached && cached.tasks && isActive) {
-          console.log('[Dashboard] using cached tasks', { count: cached.tasks.length });
           setTasks(cached.tasks);
           // If we have cache, we still fetch in background but maybe don't show full loader
         }
       } catch (e) {
-        console.log('[Dashboard] cache read error', e);
       }
 
       try {
@@ -1252,7 +1264,6 @@ const DashboardScreen = ({ navigation }) => {
         });
 
         if (tasksNeedingInfo.length > 0) {
-          console.log(`[Dashboard] fetching details for ${tasksNeedingInfo.length} missing tasks`);
           await Promise.all(tasksNeedingInfo.map(async (t) => {
             try {
               const details = await getData(`IECData/Tasks/${t.resolvedTaskId}`);
@@ -1260,7 +1271,6 @@ const DashboardScreen = ({ navigation }) => {
                 taskCatalog[t.resolvedTaskId] = details;
               }
             } catch (e) {
-              console.log(`[Dashboard] failed to fetch details for ${t.resolvedTaskId}`, e);
             }
           }));
           await saveTaskCatalogCache(taskCatalog);
@@ -1296,15 +1306,14 @@ const DashboardScreen = ({ navigation }) => {
           },
         );
 
+        // Filter to show only active (non-deleted) tasks
+        const activeTasks = filterActiveTasks(dedupedTasks, taskCatalog);
+
         if (isActive) {
-          setTasks(dedupedTasks);
+          setTasks(activeTasks);
           // 3. Save to cache for next time
-          await saveDashboardTaskCache(loginId, dateParts.isoDate, dedupedTasks);
+          await saveDashboardTaskCache(loginId, dateParts.isoDate, activeTasks);
         }
-        console.log('[Dashboard] task load success', {
-          total: dedupedTasks.length,
-          elapsedMs: Date.now() - startedAt,
-        });
       } catch (error) {
         if (isActive) {
           // If we have tasks from cache, don't show error if network fails
@@ -1313,10 +1322,6 @@ const DashboardScreen = ({ navigation }) => {
             setTasksError(error?.message || 'Unable to load tasks.');
           }
         }
-        console.log('[Dashboard] task load failed', {
-          message: error?.message || 'Unable to load tasks.',
-          elapsedMs: Date.now() - startedAt,
-        });
       } finally {
         if (isActive) {
           setTasksLoading(false);
@@ -1334,16 +1339,12 @@ const DashboardScreen = ({ navigation }) => {
     return () => {
       isActive = false;
       interactionHandle?.cancel?.();
-      console.log('[Dashboard] task load cleanup', {
-        elapsedMs: Date.now() - startedAt,
-      });
     };
   }, [loginId, tasksReloadToken]);
 
   // Handle location tracking start
   useEffect(() => {
     if (loginId) {
-      console.log('[Dashboard] starting location tracking');
       startTracking();
     }
   }, [loginId, startTracking]);
@@ -1381,7 +1382,6 @@ const DashboardScreen = ({ navigation }) => {
       // 4. Check actual system status
       const isExempt = await isIgnoringBatteryOptimizations();
       if (isExempt) {
-        console.log('[Dashboard] battery exemption confirmed, starting tracking');
         batteryPromptCheckedRef.current = true;
         setBatteryPromptChecked(true);
         setTrackingPermissionGranted(true);
@@ -1395,8 +1395,6 @@ const DashboardScreen = ({ navigation }) => {
       backgroundPermissionPromptShownRef.current = true;
       batteryPromptCheckedRef.current = true;
       setBatteryPromptChecked(true);
-
-      console.log('[Dashboard] auto background permission popup requested');
       showAlert({
         title: 'Keep Tracking Active',
         message:
@@ -1408,18 +1406,15 @@ const DashboardScreen = ({ navigation }) => {
             text: 'Allow No Restriction',
             onPress: async () => {
               try {
-                console.log('[Dashboard] auto battery setting permission confirmed');
                 await AsyncStorage.setItem(`battery_prompt_handled_${loginId}`, 'true');
                 await requestIgnoreBatteryOptimizations();
               } catch (error) {
-                console.log('[Dashboard] auto battery setting permission failed', error);
               }
             },
           },
         ],
       });
     } catch (e) {
-      console.log('[Dashboard] battery prompt check error', e);
     } finally {
       isCheckingBatteryRef.current = false;
     }
@@ -1433,7 +1428,6 @@ const DashboardScreen = ({ navigation }) => {
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
-        console.log('[Dashboard] app active - re-checking battery permission');
         checkAndShowBatteryPrompt(true);
       }
     });
@@ -1442,7 +1436,6 @@ const DashboardScreen = ({ navigation }) => {
 
 
   const handleRefreshTasks = async () => {
-    console.log('[Dashboard] manual refresh requested');
     setTasksRefreshing(true);
     setTasksError('');
 
@@ -1453,21 +1446,14 @@ const DashboardScreen = ({ navigation }) => {
         session?.employee?.userId ||
         session?.employee?.id ||
         '';
-      console.log('[Dashboard] manual refresh session', {
-        refreshedLoginId: refreshedLoginId || '(empty)',
-      });
       setLoginId(refreshedLoginId);
       setTasksReloadToken(token => token + 1);
     } catch (error) {
-      console.log('[Dashboard] manual refresh failed', {
-        message: error?.message || '(no message)',
-      });
       setTasksRefreshing(false);
     }
   };
 
   const handleLogout = () => {
-    console.log('[Dashboard] logout prompt opened');
     setMenuOpen(false);
     showAlert({
       title: 'Logout',
@@ -1483,12 +1469,11 @@ const DashboardScreen = ({ navigation }) => {
           text: 'Yes',
           onPress: async () => {
             runAfterGesture(async () => {
-              console.log('[Dashboard] logout confirmed');
               stopTracking();
               await clearLoginSession();
+              await clearSharedMediaFiles();
               await clearMediaCache();
               await clearTaskCache();
-              console.log('[Dashboard] navigating to Login');
               navigation.replace('Login');
             });
           },
@@ -1499,26 +1484,17 @@ const DashboardScreen = ({ navigation }) => {
 
   const handleTaskAction = task => {
     if (task.status === 'Pending') {
-      console.log('[Dashboard] direct task pick requested', {
-        id: task?.id || '(empty)',
-        title: task?.title || '(empty)',
-      });
       handleStartTask(task);
     }
   };
 
   const handleStartTask = task => {
-    console.log('[Dashboard] task start confirmed', {
-      id: task?.id || '(empty)',
-      title: task?.title || '(empty)',
-    });
     setActionModalTask(task);
     setActionModalMode('pick_task');
     setActionModalVisible(true);
   };
 
   const handleAddTask = mode => {
-    console.log('[Dashboard] add task requested', { mode });
     setFabOpen(false);
     runAfterGesture(() => {
       setActionModalTask(null);
@@ -1814,7 +1790,6 @@ const DashboardScreen = ({ navigation }) => {
             <Pressable
               onPress={() => {
                 runAfterGesture(() => {
-                  console.log('[Dashboard] navigating to TaskMonitoring');
                   setMenuOpen(false);
                   navigation?.navigate?.('TaskMonitoring');
                 });

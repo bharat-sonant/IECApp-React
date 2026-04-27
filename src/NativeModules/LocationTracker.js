@@ -78,10 +78,6 @@ export const stopLocationTracking = () => {
 export const subscribeToLocation = callback => {
   if (!emitter) return () => {};
   const sub = emitter.addListener('onLocationUpdate', loc => {
-    console.log(
-      '[Location] update →',
-      `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}  |  speed: ${(loc.speed * 3.6).toFixed(1)} km/h  |  accuracy: ${loc.accuracy.toFixed(1)}m`,
-    );
     callback(loc);
   });
   return () => sub.remove();
@@ -115,10 +111,6 @@ export const subscribeToMinuteSnapshot = callback => {
   if (!emitter) return () => {};
   const sub = emitter.addListener('onMinuteSnapshot', snapshot => {
     const pointCount = snapshot.path ? snapshot.path.split('~').length : 0;
-    console.log(
-      `[Location] minute snapshot →  points: ${pointCount}  |  distance: ${snapshot.distanceInMeters.toFixed(1)}m\n` +
-        `  path: ${snapshot.path}`,
-    );
     callback(snapshot);
   });
   return () => sub.remove();

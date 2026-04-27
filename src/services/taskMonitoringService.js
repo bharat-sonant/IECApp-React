@@ -48,8 +48,6 @@ const buildStorageUrl = (
   if (!path) return null;
   if (path.startsWith('http')) return path;
 
-  console.log(`[MediaURL] Building ${type} URL from:`, path);
-
   // Construct full path from filename + task data
   let fullPath = path;
 
@@ -91,7 +89,6 @@ const buildStorageUrl = (
   }
 
   const url = `${CITY.firebaseStoragePath}${encodedPath}?alt=media${cacheBuster}`;
-  console.log(`[MediaURL] ${type} -> fullPath:`, fullPath, '-> url:', url);
   return url;
 };
 
@@ -617,14 +614,6 @@ export const loadTasks = async selectedDate => {
     ...task,
     date: task.date || dateParts.isoDate,
   }));
-
-  console.log('[TaskMonitoring] loadTasks debug', {
-    selectedDate,
-    loginId,
-    taskPath: currentResult.path,
-    taskCount: currentTasks.length,
-    taskList: currentTasks,
-  });
 
   return currentTasks;
 };
