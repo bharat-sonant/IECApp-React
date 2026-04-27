@@ -202,8 +202,26 @@ const buildTaskType = (task, fallbackType) => {
       task?.TaskType,
       task?.category,
       task?.Category,
-    ) || fallbackType
+  ) || fallbackType
   );
+};
+
+const getGreetingByHour = hour => {
+  const safeHour = Number.isFinite(hour) ? hour : new Date().getHours();
+
+  if (safeHour >= 5 && safeHour < 12) {
+    return 'Good Morning,';
+  }
+
+  if (safeHour >= 12 && safeHour < 17) {
+    return 'Good Afternoon,';
+  }
+
+  if (safeHour >= 17 && safeHour < 21) {
+    return 'Good Evening,';
+  }
+
+  return 'Good Night,';
 };
 
 // resolveLeafTitle definition
@@ -1083,6 +1101,20 @@ const DashboardScreen = ({ navigation }) => {
       menuSlideAnim.setValue(Dimensions.get('window').width);
     }
   }, [menuOpen, menuSlideAnim]);
+
+  useEffect(() => {
+    const syncHour = () => {
+      setCurrentHour(new Date().getHours());
+    };
+
+    syncHour();
+    const timerId = setInterval(syncHour, 60 * 1000);
+
+    return () => {
+      clearInterval(timerId);
+    };
+  }, []);
+
   const [fabOpen, setFabOpen] = useState(false);
   const [actionModalVisible, setActionModalVisible] = useState(false);
   const [actionModalMode, setActionModalMode] = useState('add_kpi');
@@ -1096,6 +1128,7 @@ const DashboardScreen = ({ navigation }) => {
   const [tasksReloadToken, setTasksReloadToken] = useState(0);
   const [batteryPromptChecked, setBatteryPromptChecked] = useState(false);
   const [trackingPermissionGranted, setTrackingPermissionGranted] = useState(false);
+  const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const { showAlert } = useAppFeedback();
   const TaskActionModal = actionModalVisible
     ? require('../components/TaskActionModal').default
@@ -1133,6 +1166,8 @@ const DashboardScreen = ({ navigation }) => {
       completed: completedCount,
     };
   }, [tasks]);
+
+  const greetingText = useMemo(() => getGreetingByHour(currentHour), [currentHour]);
 
   useEffect(() => { }, [tasks]);
 
@@ -1616,7 +1651,7 @@ const DashboardScreen = ({ navigation }) => {
         <View style={styles.staticTopSection}>
           <View style={styles.header}>
             <View>
-              <Text style={styles.greeting}>Good Morning,</Text>
+              <Text style={styles.greeting}>{greetingText}</Text>
               <Text style={styles.userName}>{employeeName}</Text>
             </View>
             <TouchableOpacity
