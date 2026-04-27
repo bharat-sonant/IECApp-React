@@ -1,7 +1,6 @@
 package com.iecapp
 
 import android.app.Application
-import android.content.Context
 import java.io.File
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -15,25 +14,7 @@ import com.iecapp.OtaPackage
 class MainApplication : Application(), ReactApplication {
 
   override val reactHost: ReactHost by lazy {
-    val installedBundle = File(applicationContext.filesDir, "index.android.bundle")
-    val sharedPrefs = applicationContext.getSharedPreferences("ota_bundle_meta", Context.MODE_PRIVATE)
-    val storedAppVersion = sharedPrefs.getString("installed_for_app_version", null)
-    val currentAppVersion = try {
-      packageManager.getPackageInfo(packageName, 0).versionName
-    } catch (_: Exception) {
-      null
-    }
-
-    val jsBundleFilePath =
-      if (installedBundle.exists() && !storedAppVersion.isNullOrBlank() && storedAppVersion == currentAppVersion) {
-        installedBundle.absolutePath
-      } else {
-        if (installedBundle.exists() && storedAppVersion != currentAppVersion) {
-          installedBundle.delete()
-        }
-        sharedPrefs.edit().remove("installed_for_app_version").apply()
-        null
-      }
+    val jsBundleFilePath = resolveJsBundleFilePath()
 
     getDefaultReactHost(
       context = applicationContext,
@@ -45,6 +26,16 @@ class MainApplication : Application(), ReactApplication {
         },
       jsBundleFilePath = jsBundleFilePath,
     )
+  }
+
+  private fun resolveJsBundleFilePath(): String? {
+    val directBundle = File(filesDir, "index.android.bundle")
+    if (directBundle.exists()) return directBundle.absolutePath
+
+    val otaBundle = File(filesDir, "ota/index.android.bundle")
+    if (otaBundle.exists()) return otaBundle.absolutePath
+
+    return null
   }
 
   override fun onCreate() {

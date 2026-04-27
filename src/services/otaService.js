@@ -282,11 +282,6 @@ const downloadLegacyBundle = async (
       if (assetId) {
         await AsyncStorage.setItem(LAST_BUNDLE_ASSET_ID_KEY, assetId);
       }
-      if (OtaPackageInstaller?.recordInstalledBundleVersion) {
-        try {
-          await OtaPackageInstaller.recordInstalledBundleVersion();
-        } catch (_error) {}
-      }
       onComplete?.('js');
       setTimeout(() => restartApp(), 1000);
     } else {
