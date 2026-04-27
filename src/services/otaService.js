@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
 import { BackHandler, NativeModules, Platform } from 'react-native';
 import DeviceInfo from 'react-native-device-info';
+import RNRestart from 'react-native-restart';
 import { getData } from '../firebase/dbServices';
 import {
   ENABLE_JS_BUNDLE_OTA,
@@ -11,6 +12,16 @@ import {
 } from '../constants/appVersion';
 
 const restartApp = () => {
+  if (RNRestart?.Restart) {
+    RNRestart.Restart();
+    return;
+  }
+
+  if (RNRestart?.restart) {
+    RNRestart.restart();
+    return;
+  }
+
   BackHandler.exitApp();
 };
 

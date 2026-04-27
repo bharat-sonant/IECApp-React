@@ -1,6 +1,7 @@
 package com.iecapp
 
 import android.app.Application
+import java.io.File
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -13,6 +14,13 @@ import com.iecapp.OtaPackage
 class MainApplication : Application(), ReactApplication {
 
   override val reactHost: ReactHost by lazy {
+    val installedBundle = File(applicationContext.filesDir, "index.android.bundle")
+    val jsBundleFilePath = if (installedBundle.exists()) {
+      installedBundle.absolutePath
+    } else {
+      null
+    }
+
     getDefaultReactHost(
       context = applicationContext,
       packageList =
@@ -21,6 +29,7 @@ class MainApplication : Application(), ReactApplication {
           add(MediaDownloadPackage())
           add(OtaPackage())
         },
+      jsBundleFilePath = jsBundleFilePath,
     )
   }
 
