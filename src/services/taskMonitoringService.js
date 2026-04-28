@@ -1,6 +1,6 @@
 import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
-import { CITY } from '../firebase/firebaseConfig';
+import { CITY, getCityStoragePrefix } from '../firebase/firebaseConfig';
 
 const getFirstText = (...values) => {
   for (const value of values) {
@@ -63,11 +63,11 @@ const buildStorageUrl = (
       const month = monthNames[monthNum - 1];
 
       // Construct the full Firebase Storage path
-      // Format: DevTest/IECData/IECTasksImages/{userId}/{year}/{month}/{dateStr}/{taskId}/{itemKey}/{filename}
+      // Format: {city}/IECData/IECTasksImages/{userId}/{year}/{month}/{dateStr}/{taskId}/{itemKey}/{filename}
       if (type === 'video') {
-        fullPath = `DevTest/IECData/IECTasksVideos/${userId}/${year}/${month}/${dateStr}/${taskId}/${itemKey}/${path}`;
+        fullPath = `${getCityStoragePrefix(CITY)}IECData/IECTasksVideos/${userId}/${year}/${month}/${dateStr}/${taskId}/${itemKey}/${path}`;
       } else {
-        fullPath = `DevTest/IECData/IECTasksImages/${userId}/${year}/${month}/${dateStr}/${taskId}/${itemKey}/${path}`;
+        fullPath = `${getCityStoragePrefix(CITY)}IECData/IECTasksImages/${userId}/${year}/${month}/${dateStr}/${taskId}/${itemKey}/${path}`;
       }
     }
   }
@@ -191,14 +191,12 @@ const buildTaskTitle = task => {
       task?.Title,
       task?.taskTitle,
       task?.TaskTitle,
+      task?.taskName,
+      task?.TaskName,
       task?.name,
       task?.Name,
       task?.subject,
       task?.Subject,
-      task?.description,
-      task?.Description,
-      task?.remarks,
-      task?.Remarks,
     ) || 'Untitled Task'
   );
 };
@@ -298,7 +296,9 @@ const resolveCatalogTaskTitle = (catalog, taskKey) => {
   if (!taskKey || !catalog || typeof catalog !== 'object') {
     return '';
   }
-  const entry = catalog[taskKey];
+  const entry =
+    resolveCatalogTaskRecord(catalog, taskKey) ||
+    catalog[taskKey];
   if (!entry) {
     return '';
   }
@@ -307,10 +307,13 @@ const resolveCatalogTaskTitle = (catalog, taskKey) => {
   }
   return getFirstText(
     entry?.name,
+    entry?.Name,
     entry?.title,
+    entry?.Title,
     entry?.taskName,
     entry?.TaskName,
     entry?.label,
+    entry?.Label,
   );
 };
 
@@ -586,9 +589,9 @@ const flattenTaskNode = (
           );
           const id = getFirstText(item?.id, item?.Id, `${sourceLabel}-${index}`);
           const title =
-            buildTaskTitle(item) ||
             resolveCatalogTaskTitle(taskCatalog, taskId) ||
             resolveCatalogTaskTitle(taskCatalog, id) ||
+            buildTaskTitle(item) ||
             taskId ||
             id;
           const status = resolveTaskStatus(item);
@@ -692,8 +695,8 @@ const flattenTaskNode = (
         key,
       );
       const title =
-        getFirstText(item) ||
         resolveCatalogTaskTitle(taskCatalog, taskKey) ||
+        getFirstText(item) ||
         taskKey;
       if (!title) {
         return [];

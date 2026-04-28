@@ -158,24 +158,9 @@ const TaskMonitoringScreen = ({ navigation }) => {
   }, [selectedDate, setCalendarMonth]);
 
   useEffect(() => {
-
     return () => {
     };
   }, []);
-
-  useEffect(() => {
-  }, [
-    calendarMonth,
-    datePickerOpen,
-    filterMenuOpen,
-    filteredTasks.length,
-    mediaViewerOpen,
-    selectedDate,
-    selectedFilter,
-    selectedTask,
-    stats,
-    tasks.length,
-  ]);
 
   const renderTask = ({ item }) => {
     const status = STATUS_META[item.status] ?? STATUS_META.Pending;

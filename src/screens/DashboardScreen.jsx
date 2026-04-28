@@ -22,7 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import appTheme from '../theme/appTheme';
 import CommonLoader from '../components/CommonLoader';
 import { getData } from '../firebase/firebaseService';
-import { FIREBASE_CONFIG } from '../firebase/firebaseConfig';
+import { FIREBASE_CONFIG, getCityStoragePrefix } from '../firebase/firebaseConfig';
 import {
   clearLoginSession,
   loadLoginSession,
@@ -180,6 +180,8 @@ const buildTaskTitle = task => {
       task?.Task,
       task?.taskTitle,
       task?.TaskTitle,
+      task?.taskName,
+      task?.TaskName,
       task?.name,
       task?.Name,
       task?.subject,
@@ -230,9 +232,38 @@ const resolveLeafTitle = task =>
     task?.Task,
     task?.title,
     task?.TaskTitle,
+    task?.taskName,
+    task?.TaskName,
     task?.name,
     task?.Name,
   ) || buildTaskTitle(task);
+
+const isMeaningfulTaskTitle = value => {
+  const text = getFirstText(value);
+  if (!text) {
+    return false;
+  }
+  return text.toLowerCase() !== 'untitled task';
+};
+
+const getDashboardDisplayTitle = task => {
+  const directTitle = getFirstText(
+    task?.title,
+    task?.TaskTitle,
+    task?.taskName,
+    task?.TaskName,
+    task?.name,
+    task?.Name,
+  );
+  const rawTitle = resolveLeafTitle(task?.raw);
+  const catalogTitle = resolveLeafTitle(task?.catalogEntry);
+  return (
+    (isMeaningfulTaskTitle(directTitle) ? directTitle : '') ||
+    (isMeaningfulTaskTitle(rawTitle) ? rawTitle : '') ||
+    (isMeaningfulTaskTitle(catalogTitle) ? catalogTitle : '') ||
+    'Untitled Task'
+  );
+};
 
 
 const resolveLeafDescription = task =>
@@ -785,6 +816,10 @@ const TASK_FIELD_KEYS = new Set([
   'TaskStatus',
   'taskType',
   'TaskType',
+  'taskName',
+  'TaskName',
+  'name',
+  'Name',
   'title',
   'Title',
   'type',
@@ -863,9 +898,9 @@ const buildStorageUrl = (
         const isoDate = `${year}-${parts[1]}-${day}`;
 
         if (type === 'video') {
-          fullPath = `DevTest/IECData/IECTasksVideos/${userId}/${year}/${month}/${isoDate}/${taskId}/${itemKey}/${path}`;
+          fullPath = `${getCityStoragePrefix(FIREBASE_CONFIG)}IECData/IECTasksVideos/${userId}/${year}/${month}/${isoDate}/${taskId}/${itemKey}/${path}`;
         } else {
-          fullPath = `DevTest/IECData/IECTasksImages/${userId}/${year}/${month}/${isoDate}/${taskId}/${itemKey}/${path}`;
+          fullPath = `${getCityStoragePrefix(FIREBASE_CONFIG)}IECData/IECTasksImages/${userId}/${year}/${month}/${isoDate}/${taskId}/${itemKey}/${path}`;
         }
       }
     }
@@ -941,9 +976,17 @@ const flattenTaskNode = (
             fallbackId,
             `${sourceLabel}-${index}`,
           );
+          const catalogTask =
+            resolveCatalogTaskRecord(taskCatalog, resolvedTaskId) ||
+            resolveCatalogTaskRecord(taskCatalog, taskKey) ||
+            resolveCatalogTaskRecord(taskCatalog, leafKey) ||
+            resolveCatalogTaskRecord(taskCatalog, id);
           const title =
             resolveLeafTitle(item) ||
+            resolveLeafTitle(catalogTask) ||
             resolveCatalogTaskTitle(taskCatalog, resolvedTaskId) ||
+            resolveCatalogTaskTitle(taskCatalog, taskKey) ||
+            resolveCatalogTaskTitle(taskCatalog, leafKey) ||
             resolveCatalogTaskTitle(taskCatalog, id) ||
             resolvedTaskId ||
             id;
@@ -1269,7 +1312,25 @@ const DashboardScreen = ({ navigation }) => {
 
   const greetingText = useMemo(() => getGreetingByHour(currentHour), [currentHour]);
 
-  useEffect(() => { }, [tasks]);
+  useEffect(() => {
+    console.log(
+      '[DashboardScreen] task list snapshot',
+      tasks.map((task, index) => ({
+        index,
+        id: task?.id || '',
+        resolvedTaskId: task?.resolvedTaskId || '',
+        taskKey: task?.taskKey || '',
+        leafKey: task?.leafKey || '',
+        title: task?.title || '',
+        taskName: task?.taskName || task?.TaskName || '',
+        name: task?.name || task?.Name || '',
+        rawTitle: task?.raw?.title || task?.raw?.taskName || task?.raw?.name || '',
+        status: task?.status || '',
+        taskCategory: task?.taskCategory || '',
+        sourceLabel: task?.sourceLabel || '',
+      })),
+    );
+  }, [tasks]);
 
   useEffect(() => {
     let isActive = true;
@@ -1367,6 +1428,27 @@ const DashboardScreen = ({ navigation }) => {
           taskCatalog = (await readTaskCatalogCache()) || {};
         }
 
+        const debugTaskId = '22';
+        const debugCatalogRecord =
+          resolveCatalogTaskRecord(taskCatalog, debugTaskId) ||
+          taskCatalog?.[debugTaskId] ||
+          null;
+        console.log('[DashboardScreen] catalog debug', {
+          debugTaskId,
+          rawCatalogValue: taskCatalog?.[debugTaskId] || null,
+          matchedCatalogRecord: debugCatalogRecord,
+          matchedCatalogName: getFirstText(
+            debugCatalogRecord?.name,
+            debugCatalogRecord?.Name,
+            debugCatalogRecord?.title,
+            debugCatalogRecord?.Title,
+            debugCatalogRecord?.taskName,
+            debugCatalogRecord?.TaskName,
+            debugCatalogRecord?.label,
+            debugCatalogRecord?.Label,
+          ),
+        });
+
         const [kpiResult, priorityResult, currentResult] =
           await Promise.all([
             readFirstExistingPath(kpiPaths),
@@ -1428,13 +1510,39 @@ const DashboardScreen = ({ navigation }) => {
 
         // Re-normalize titles and descriptions after deep fetch
         const finalTasks = combinedTasks.map(t => {
-          const catalogEntry = resolveCatalogTaskRecord(
-            taskCatalog,
-            t.resolvedTaskId || t.id,
+          const catalogEntry =
+            resolveCatalogTaskRecord(taskCatalog, t.resolvedTaskId) ||
+            resolveCatalogTaskRecord(taskCatalog, t.taskKey) ||
+            resolveCatalogTaskRecord(taskCatalog, t.leafKey) ||
+            resolveCatalogTaskRecord(taskCatalog, t.id);
+          const rawTitle = resolveLeafTitle(t.raw);
+          const catalogTitle = resolveLeafTitle(catalogEntry);
+          const currentTitle = getFirstText(
+            t.title,
+            t.taskName,
+            t.TaskName,
+            t.name,
+            t.Name,
           );
           return {
             ...t,
-            title: t.title && t.title !== t.resolvedTaskId ? t.title : (resolveLeafTitle(catalogEntry) || t.title),
+            catalogEntry,
+            title:
+              isMeaningfulTaskTitle(currentTitle) && currentTitle !== t.resolvedTaskId
+                ? currentTitle
+                : (
+                  rawTitle ||
+                  catalogTitle ||
+                  t.raw?.taskName ||
+                  t.raw?.TaskName ||
+                  t.raw?.name ||
+                  t.raw?.Name ||
+                  t.taskName ||
+                  t.TaskName ||
+                  t.name ||
+                  t.Name ||
+                  'Untitled Task'
+                ),
             description: t.description || resolveLeafDescription(catalogEntry) || '',
           };
         });
@@ -1704,7 +1812,7 @@ const DashboardScreen = ({ navigation }) => {
         </View>
 
         <Text style={styles.taskTitle} numberOfLines={2}>
-          {item.title}
+          {getDashboardDisplayTitle(item)}
         </Text>
         <View style={styles.taskFooter}>
           <View
