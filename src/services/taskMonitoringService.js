@@ -314,6 +314,159 @@ const resolveCatalogTaskTitle = (catalog, taskKey) => {
   );
 };
 
+const normalizeTaskStateValue = value =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase();
+
+const hasTruthyTaskState = value =>
+  normalizeTaskStateValue(value) === '1' ||
+  normalizeTaskStateValue(value) === 'true' ||
+  normalizeTaskStateValue(value) === 'yes' ||
+  normalizeTaskStateValue(value) === 'active' ||
+  normalizeTaskStateValue(value) === 'enabled' ||
+  normalizeTaskStateValue(value) === 'visible' ||
+  normalizeTaskStateValue(value) === 'open';
+
+const hasFalsyTaskState = value =>
+  normalizeTaskStateValue(value) === '0' ||
+  normalizeTaskStateValue(value) === 'false' ||
+  normalizeTaskStateValue(value) === 'no' ||
+  normalizeTaskStateValue(value) === 'inactive' ||
+  normalizeTaskStateValue(value) === 'disabled' ||
+  normalizeTaskStateValue(value) === 'hidden' ||
+  normalizeTaskStateValue(value) === 'deleted' ||
+  normalizeTaskStateValue(value) === 'closed';
+
+const resolveCatalogTaskRecord = (catalog, taskId) => {
+  const targetTaskId = normalizeTaskStateValue(taskId);
+  if (!targetTaskId || !catalog || typeof catalog !== 'object') {
+    return null;
+  }
+
+  const seen = new Set();
+  const walk = node => {
+    if (!node || typeof node !== 'object' || seen.has(node)) {
+      return null;
+    }
+
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = walk(item);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (normalizeTaskStateValue(key) === targetTaskId) {
+        return value && typeof value === 'object' ? value : node;
+      }
+    }
+
+    const candidateIds = [
+      node.taskId,
+      node.TaskId,
+      node.taskID,
+      node.TaskID,
+      node.id,
+      node.Id,
+      node.key,
+      node.Key,
+      node.taskKey,
+      node.TaskKey,
+    ].map(normalizeTaskStateValue);
+
+    if (candidateIds.includes(targetTaskId)) {
+      return node;
+    }
+
+    for (const value of Object.values(node)) {
+      const found = walk(value);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  };
+
+  return walk(catalog);
+};
+
+const isCatalogTaskVisible = catalogTask => {
+  if (!catalogTask || typeof catalogTask !== 'object') {
+    return false;
+  }
+
+  const deleteState = normalizeTaskStateValue(
+    catalogTask?.isDeleted ??
+      catalogTask?.IsDeleted ??
+      catalogTask?.isDelete ??
+      catalogTask?.IsDelete ??
+      catalogTask?.deleted ??
+      catalogTask?.Deleted ??
+      catalogTask?.deletedFlag ??
+      catalogTask?.DeletedFlag ??
+      catalogTask?.removeFlag ??
+      catalogTask?.RemoveFlag ??
+      catalogTask?.removed ??
+      catalogTask?.Removed,
+  );
+
+  if (deleteState && hasTruthyTaskState(deleteState)) {
+    return false;
+  }
+
+  const statusState = normalizeTaskStateValue(
+    catalogTask?.status ??
+      catalogTask?.Status ??
+      catalogTask?.taskStatus ??
+      catalogTask?.TaskStatus ??
+      catalogTask?.state ??
+      catalogTask?.State ??
+      catalogTask?.active ??
+      catalogTask?.Active ??
+      catalogTask?.isActive ??
+      catalogTask?.IsActive ??
+      catalogTask?.enabled ??
+      catalogTask?.Enabled ??
+      catalogTask?.visible ??
+      catalogTask?.Visible,
+  );
+
+  if (!statusState) {
+    return true;
+  }
+
+  if (hasTruthyTaskState(statusState)) {
+    return true;
+  }
+
+  return !hasFalsyTaskState(statusState);
+};
+
+const filterActiveTasks = (tasks, taskCatalog = {}) => {
+  if (!Array.isArray(tasks)) {
+    return [];
+  }
+
+  return tasks.filter(task => {
+    const taskId = task?.taskId || task?.resolvedTaskId || task?.id;
+    const catalogTask = resolveCatalogTaskRecord(taskCatalog, taskId);
+
+    if (!catalogTask) {
+      return !taskCatalog || Object.keys(taskCatalog).length === 0;
+    }
+
+    return isCatalogTaskVisible(catalogTask);
+  });
+};
+
 const TASK_FIELD_KEYS = new Set([
   '_at',
   'address',
@@ -615,5 +768,5 @@ export const loadTasks = async selectedDate => {
     date: task.date || dateParts.isoDate,
   }));
 
-  return currentTasks;
+  return filterActiveTasks(currentTasks, taskCatalog);
 };

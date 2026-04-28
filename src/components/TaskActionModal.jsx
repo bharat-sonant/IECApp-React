@@ -216,6 +216,235 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
   }
 };
 
+const normalizeTaskStateValue = value =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase();
+
+const hasTruthyTaskState = value =>
+  normalizeTaskStateValue(value) === '1' ||
+  normalizeTaskStateValue(value) === 'true' ||
+  normalizeTaskStateValue(value) === 'yes' ||
+  normalizeTaskStateValue(value) === 'active' ||
+  normalizeTaskStateValue(value) === 'enabled' ||
+  normalizeTaskStateValue(value) === 'visible' ||
+  normalizeTaskStateValue(value) === 'open';
+
+const hasFalsyTaskState = value =>
+  normalizeTaskStateValue(value) === '0' ||
+  normalizeTaskStateValue(value) === 'false' ||
+  normalizeTaskStateValue(value) === 'no' ||
+  normalizeTaskStateValue(value) === 'inactive' ||
+  normalizeTaskStateValue(value) === 'disabled' ||
+  normalizeTaskStateValue(value) === 'hidden' ||
+  normalizeTaskStateValue(value) === 'deleted' ||
+  normalizeTaskStateValue(value) === 'closed';
+
+const isVisibleTaskRecord = task => {
+  if (!task || typeof task !== 'object') {
+    return true;
+  }
+
+  const sources = [task, task.raw, task.catalogTask, task.raw?.catalogTask].filter(
+    source => source && typeof source === 'object',
+  );
+
+  const deleteState = sources
+    .flatMap(source => [
+      source.isDeleted,
+      source.IsDeleted,
+      source.isDelete,
+      source.IsDelete,
+      source.deleted,
+      source.Deleted,
+      source.deletedFlag,
+      source.DeletedFlag,
+      source.removeFlag,
+      source.RemoveFlag,
+      source.removed,
+      source.Removed,
+    ])
+    .map(normalizeTaskStateValue)
+    .find(Boolean);
+
+  if (deleteState && hasTruthyTaskState(deleteState)) {
+    return false;
+  }
+
+  const statusState = sources
+    .flatMap(source => [
+      source.state,
+      source.State,
+      source.status,
+      source.Status,
+      source.taskStatus,
+      source.TaskStatus,
+      source.recordStatus,
+      source.RecordStatus,
+      source.active,
+      source.Active,
+      source.isActive,
+      source.IsActive,
+      source.enabled,
+      source.Enabled,
+      source.visible,
+      source.Visible,
+    ])
+    .map(normalizeTaskStateValue)
+    .find(Boolean);
+
+  if (!statusState) {
+    return true;
+  }
+
+  if (hasTruthyTaskState(statusState)) {
+    return true;
+  }
+
+  return !hasFalsyTaskState(statusState);
+};
+
+const resolveCatalogTaskRecord = (catalog, taskId) => {
+  const targetTaskId = normalizeTaskStateValue(taskId);
+  if (!targetTaskId || !catalog || typeof catalog !== 'object') {
+    return null;
+  }
+
+  const seen = new Set();
+  const walk = node => {
+    if (!node || typeof node !== 'object' || seen.has(node)) {
+      return null;
+    }
+
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = walk(item);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (normalizeTaskStateValue(key) === targetTaskId) {
+        return value && typeof value === 'object' ? value : node;
+      }
+    }
+
+    const candidateIds = [
+      node.taskId,
+      node.TaskId,
+      node.taskID,
+      node.TaskID,
+      node.id,
+      node.Id,
+      node.key,
+      node.Key,
+      node.taskKey,
+      node.TaskKey,
+    ].map(normalizeTaskStateValue);
+
+    if (candidateIds.includes(targetTaskId)) {
+      return node;
+    }
+
+    for (const value of Object.values(node)) {
+      const found = walk(value);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  };
+
+  return walk(catalog);
+};
+
+const isCatalogTaskVisible = catalogTask => {
+  if (!catalogTask || typeof catalogTask !== 'object') {
+    return false;
+  }
+
+  const deleteState = normalizeTaskStateValue(
+    catalogTask.isDeleted ??
+      catalogTask.IsDeleted ??
+      catalogTask.isDelete ??
+      catalogTask.IsDelete ??
+      catalogTask.deleted ??
+      catalogTask.Deleted ??
+      catalogTask.deletedFlag ??
+      catalogTask.DeletedFlag ??
+      catalogTask.removeFlag ??
+      catalogTask.RemoveFlag ??
+      catalogTask.removed ??
+      catalogTask.Removed,
+  );
+
+  if (deleteState && hasTruthyTaskState(deleteState)) {
+    return false;
+  }
+
+  const statusState = normalizeTaskStateValue(
+    catalogTask.state ??
+      catalogTask.State ??
+      catalogTask.status ??
+      catalogTask.Status ??
+      catalogTask.taskStatus ??
+      catalogTask.TaskStatus ??
+      catalogTask.recordStatus ??
+      catalogTask.RecordStatus ??
+      catalogTask.active ??
+      catalogTask.Active ??
+      catalogTask.isActive ??
+      catalogTask.IsActive ??
+      catalogTask.enabled ??
+      catalogTask.Enabled ??
+      catalogTask.visible ??
+      catalogTask.Visible,
+  );
+
+  if (!statusState) {
+    return true;
+  }
+
+  if (hasTruthyTaskState(statusState)) {
+    return true;
+  }
+
+  return !hasFalsyTaskState(statusState);
+};
+
+const isTaskOptionVisible = (task, catalog = null) => {
+  if (!task || typeof task !== 'object') {
+    return false;
+  }
+
+  const taskId = String(
+    task.taskId ||
+      task.TaskId ||
+      task.taskKey ||
+      task.TaskKey ||
+      task.id ||
+      task.key ||
+      '',
+  ).trim();
+
+  const catalogTask = resolveCatalogTaskRecord(
+    catalog,
+    taskId || task.originalPath || task.raw?.originalPath || task.title,
+  );
+
+  if (catalogTask) {
+    return isCatalogTaskVisible(catalogTask);
+  }
+
+  return isVisibleTaskRecord(task);
+};
+
 const TaskActionModal = ({
   visible,
   onClose,
@@ -229,6 +458,7 @@ const TaskActionModal = ({
   const [selectedTaskMeta, setSelectedTaskMeta] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [taskChoices, setTaskChoices] = useState([]);
+  const [taskCatalog, setTaskCatalog] = useState(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -300,6 +530,36 @@ const TaskActionModal = ({
   }, [visible, mode]);
 
   useEffect(() => {
+    let isActive = true;
+
+    const loadTaskCatalog = async () => {
+      if (!visible) {
+        if (isActive) {
+          setTaskCatalog(null);
+        }
+        return;
+      }
+
+      try {
+        const catalog = await getData('IECData/Tasks');
+        if (isActive) {
+          setTaskCatalog(catalog && typeof catalog === 'object' ? catalog : null);
+        }
+      } catch (error) {
+        if (isActive) {
+          setTaskCatalog(null);
+        }
+      }
+    };
+
+    loadTaskCatalog();
+
+    return () => {
+      isActive = false;
+    };
+  }, [visible]);
+
+  useEffect(() => {
     return () => {
       if (inlineToastTimerRef.current) {
         clearTimeout(inlineToastTimerRef.current);
@@ -330,42 +590,6 @@ const TaskActionModal = ({
     }, 2200);
   };
 
-  const isVisibleTaskRecord = task => {
-    if (!task || typeof task !== 'object') {
-      return true;
-    }
-
-    const catalogTask =
-      (task.catalogTask && typeof task.catalogTask === 'object'
-        ? task.catalogTask
-        : null) ||
-      (task.raw?.catalogTask && typeof task.raw.catalogTask === 'object'
-        ? task.raw.catalogTask
-        : null);
-
-    if (!catalogTask) {
-      return true;
-    }
-
-    const isDeleted = String(
-      catalogTask?.isDeleted ??
-      catalogTask?.IsDeleted ??
-      '',
-    ).toLowerCase();
-
-    if (isDeleted === 'yes') {
-      return false;
-    }
-
-    const catalogStatus = String(
-      catalogTask?.status ??
-      catalogTask?.Status ??
-      '',
-    ).trim();
-
-    return catalogStatus === '1';
-  };
-
   const dedupeTaskOptions = options => {
     const seen = new Set();
     return (Array.isArray(options) ? options : []).filter(item => {
@@ -392,6 +616,7 @@ const TaskActionModal = ({
   };
 
   const normalizedTaskOptions = useMemo(() => {
+    const visibilityCatalog = taskCatalog || null;
     return dedupeTaskOptions(
       (Array.isArray(taskChoices) ? taskChoices : [])
       .map((item, index) => {
@@ -458,11 +683,12 @@ const TaskActionModal = ({
         };
       })
       .filter(Boolean)
-      .filter(isVisibleTaskRecord),
+      .filter(item => isTaskOptionVisible(item, visibilityCatalog)),
     );
-  }, [taskChoices]);
+  }, [taskCatalog, taskChoices]);
 
   const pickTaskOptions = useMemo(() => {
+    const visibilityCatalog = taskCatalog || null;
     return dedupeTaskOptions(
       (Array.isArray(taskOptions) ? taskOptions : [])
       .map((item, index) => {
@@ -529,9 +755,9 @@ const TaskActionModal = ({
         };
       })
       .filter(Boolean)
-      .filter(isVisibleTaskRecord),
+      .filter(item => isTaskOptionVisible(item, visibilityCatalog)),
     );
-  }, [taskOptions]);
+  }, [taskCatalog, taskOptions]);
 
   const buildTaskChoices = useCallback(async () => {
     const session = await loadLoginSession();
@@ -792,10 +1018,6 @@ const TaskActionModal = ({
       if (Array.isArray(kpiPayload)) {
         kpiPayload.forEach((item, index) => {
           if (item && typeof item === 'object') {
-            const taskState = getTaskState(item);
-            if (taskState.hasState && !taskState.isActive) {
-              return;
-            }
             pushUnique(choices, {
               ...item,
               id: item.id ?? item.key ?? item.taskId ?? item.TaskId ?? index,
@@ -803,7 +1025,6 @@ const TaskActionModal = ({
               priority: 'low',
               type: item.type ?? item.taskType ?? item.TaskType ?? 'KPI',
               originalPath: `IECData/IECKPITasks/${userId}/${index}`,
-              catalogTask: taskState.catalogTask || null,
             });
             return;
           }
@@ -822,10 +1043,6 @@ const TaskActionModal = ({
       } else if (kpiPayload && typeof kpiPayload === 'object') {
         Object.entries(kpiPayload).forEach(([key, value]) => {
           if (value && typeof value === 'object') {
-            const taskState = getTaskState(value);
-            if (taskState.hasState && !taskState.isActive) {
-              return;
-            }
             pushUnique(choices, {
               ...value,
               id: value.id ?? value.key ?? value.taskId ?? value.TaskId ?? key,
@@ -833,7 +1050,6 @@ const TaskActionModal = ({
               priority: 'low',
               type: value.type ?? value.taskType ?? value.TaskType ?? 'KPI',
               originalPath: `IECData/IECKPITasks/${userId}/${key}`,
-              catalogTask: taskState.catalogTask || null,
             });
             return;
           }
@@ -860,7 +1076,9 @@ const TaskActionModal = ({
 
       collectOtherTaskChoices(choices, payload);
 
-      return dedupeTaskOptions(choices);
+      return dedupeTaskOptions(choices).filter(item =>
+        isTaskOptionVisible(item, payload),
+      );
     }
 
     return [];

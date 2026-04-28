@@ -14,6 +14,26 @@ const parseDate = value => {
   return new Date(year, month - 1, day);
 };
 
+const getPriorityRank = task => {
+  const rawPriority = String(task?.priority || task?.type || '')
+    .trim()
+    .toLowerCase();
+
+  if (rawPriority.includes('high')) {
+    return 3;
+  }
+
+  if (rawPriority.includes('medium')) {
+    return 2;
+  }
+
+  if (rawPriority.includes('low')) {
+    return 1;
+  }
+
+  return 0;
+};
+
 export const useTaskMonitoring = () => {
   const isFocused = useIsFocused();
   const [selectedFilter, setSelectedFilter] = useState('All');
@@ -29,12 +49,24 @@ export const useTaskMonitoring = () => {
   const [error, setError] = useState(null);
 
   const filteredTasks = useMemo(() => {
-    return tasks.filter(task => {
+    return tasks
+      .filter(task => {
       const matchesStatus =
         selectedFilter === 'All' ? true : task.status === selectedFilter;
       const matchesDate = selectedDate ? task.date === selectedDate : true;
       return matchesStatus && matchesDate;
-    });
+      })
+      .map((task, index) => ({ task, index }))
+      .sort((left, right) => {
+        const priorityDelta =
+          getPriorityRank(right.task) - getPriorityRank(left.task);
+        if (priorityDelta !== 0) {
+          return priorityDelta;
+        }
+
+        return left.index - right.index;
+      })
+      .map(entry => entry.task);
   }, [selectedFilter, selectedDate, tasks]);
 
   const stats = useMemo(() => {

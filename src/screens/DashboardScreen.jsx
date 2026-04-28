@@ -10,9 +10,8 @@ import {
   Text,
   View,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   AppState,
-  Animated,
-  Dimensions,
 } from 'react-native';
 import {
   SafeAreaView,
@@ -202,7 +201,7 @@ const buildTaskType = (task, fallbackType) => {
       task?.TaskType,
       task?.category,
       task?.Category,
-  ) || fallbackType
+    ) || fallbackType
   );
 };
 
@@ -341,6 +340,143 @@ const resolveCatalogTaskTitle = (catalog, taskKey) => {
     entry?.TaskName,
     entry?.label,
   );
+};
+
+const normalizeTaskStateValue = value =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase();
+
+const resolveCatalogTaskRecord = (catalog, taskId) => {
+  const targetTaskId = normalizeTaskStateValue(taskId);
+  if (!targetTaskId || !catalog || typeof catalog !== 'object') {
+    return null;
+  }
+
+  const seen = new Set();
+  const walk = node => {
+    if (!node || typeof node !== 'object' || seen.has(node)) {
+      return null;
+    }
+
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = walk(item);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (normalizeTaskStateValue(key) === targetTaskId) {
+        return value && typeof value === 'object' ? value : node;
+      }
+    }
+
+    const candidateIds = [
+      node.taskId,
+      node.TaskId,
+      node.taskID,
+      node.TaskID,
+      node.id,
+      node.Id,
+      node.key,
+      node.Key,
+      node.taskKey,
+      node.TaskKey,
+      node.taskID,
+    ].map(normalizeTaskStateValue);
+
+    if (candidateIds.includes(targetTaskId)) {
+      return node;
+    }
+
+    for (const value of Object.values(node)) {
+      const found = walk(value);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  };
+
+  return walk(catalog);
+};
+
+const hasTruthyTaskState = value =>
+  normalizeTaskStateValue(value) === '1' ||
+  normalizeTaskStateValue(value) === 'true' ||
+  normalizeTaskStateValue(value) === 'yes' ||
+  normalizeTaskStateValue(value) === 'active' ||
+  normalizeTaskStateValue(value) === 'enabled' ||
+  normalizeTaskStateValue(value) === 'visible' ||
+  normalizeTaskStateValue(value) === 'open';
+
+const hasFalsyTaskState = value =>
+  normalizeTaskStateValue(value) === '0' ||
+  normalizeTaskStateValue(value) === 'false' ||
+  normalizeTaskStateValue(value) === 'no' ||
+  normalizeTaskStateValue(value) === 'inactive' ||
+  normalizeTaskStateValue(value) === 'disabled' ||
+  normalizeTaskStateValue(value) === 'hidden' ||
+  normalizeTaskStateValue(value) === 'deleted' ||
+  normalizeTaskStateValue(value) === 'closed';
+
+const isCatalogTaskVisible = catalogTask => {
+  if (!catalogTask || typeof catalogTask !== 'object') {
+    return false;
+  }
+
+  const deleteState = normalizeTaskStateValue(
+    catalogTask?.isDeleted ??
+      catalogTask?.IsDeleted ??
+      catalogTask?.isDelete ??
+      catalogTask?.IsDelete ??
+      catalogTask?.deleted ??
+      catalogTask?.Deleted ??
+      catalogTask?.deletedFlag ??
+      catalogTask?.DeletedFlag ??
+      catalogTask?.removeFlag ??
+      catalogTask?.RemoveFlag ??
+      catalogTask?.removed ??
+      catalogTask?.Removed,
+  );
+
+  if (deleteState && hasTruthyTaskState(deleteState)) {
+    return false;
+  }
+
+  const statusState = normalizeTaskStateValue(
+    catalogTask?.status ??
+      catalogTask?.Status ??
+      catalogTask?.taskStatus ??
+      catalogTask?.TaskStatus ??
+      catalogTask?.state ??
+      catalogTask?.State ??
+      catalogTask?.active ??
+      catalogTask?.Active ??
+      catalogTask?.isActive ??
+      catalogTask?.IsActive ??
+      catalogTask?.enabled ??
+      catalogTask?.Enabled ??
+      catalogTask?.visible ??
+      catalogTask?.Visible,
+  );
+
+  if (!statusState) {
+    return true;
+  }
+
+  if (hasTruthyTaskState(statusState)) {
+    return true;
+  }
+
+  return !hasFalsyTaskState(statusState);
 };
 
 const normalizeIdentityText = (...values) =>
@@ -534,36 +670,14 @@ const filterActiveTasks = (tasks, taskCatalog = {}) => {
   if (!Array.isArray(tasks)) return [];
 
   return tasks.filter(task => {
-    // Get the task from catalog using taskId
-    const taskId = task.taskId || task.resolvedTaskId;
-    const catalogTask = taskCatalog[taskId];
+    const taskId = task.taskId || task.resolvedTaskId || task.id;
+    const catalogTask = resolveCatalogTaskRecord(taskCatalog, taskId);
 
     if (!catalogTask) {
-      // If catalog task not found, allow task to show (don't filter)
-      return true;
+      return !taskCatalog || Object.keys(taskCatalog).length === 0;
     }
 
-    // Check isDeleted from catalog
-    const isDeleted = String(
-      catalogTask?.isDeleted ??
-      catalogTask?.IsDeleted ??
-      '',
-    ).toLowerCase();
-
-    // Skip if deleted
-    if (isDeleted === 'yes') {
-      return false;
-    }
-
-    // Check status from catalog
-    const catalogStatus = String(
-      catalogTask?.status ??
-      catalogTask?.Status ??
-      ''
-    );
-
-    // Only show tasks where status is '1' (active)
-    return catalogStatus === '1';
+    return isCatalogTaskVisible(catalogTask);
   });
 };
 
@@ -1087,20 +1201,6 @@ const DashboardScreen = ({ navigation }) => {
     requestIgnoreBatteryOptimizations,
   } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuSlideAnim = React.useRef(new Animated.Value(Dimensions.get('window').width)).current;
-
-  React.useEffect(() => {
-    if (menuOpen) {
-      Animated.spring(menuSlideAnim, {
-        toValue: 0,
-        tension: 65,
-        friction: 11,
-        useNativeDriver: true,
-      }).start();
-    } else {
-      menuSlideAnim.setValue(Dimensions.get('window').width);
-    }
-  }, [menuOpen, menuSlideAnim]);
 
   useEffect(() => {
     const syncHour = () => {
@@ -1251,8 +1351,21 @@ const DashboardScreen = ({ navigation }) => {
           `IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.monthName}/${dateParts.isoDate}`,
         ];
 
-        // 2. Load Catalog (with its own cache)
-        let taskCatalog = (await readTaskCatalogCache()) || {};
+        // 2. Load the latest catalog from Firebase first, then fall back to cache
+        let taskCatalog = {};
+        try {
+          const freshCatalog = await getData('IECData/Tasks');
+          if (freshCatalog && typeof freshCatalog === 'object') {
+            taskCatalog = freshCatalog;
+            await saveTaskCatalogCache(freshCatalog);
+          }
+        } catch (catalogError) {
+          taskCatalog = (await readTaskCatalogCache()) || {};
+        }
+
+        if (!taskCatalog || typeof taskCatalog !== 'object') {
+          taskCatalog = (await readTaskCatalogCache()) || {};
+        }
 
         const [kpiResult, priorityResult, currentResult] =
           await Promise.all([
@@ -1293,7 +1406,9 @@ const DashboardScreen = ({ navigation }) => {
         const combinedTasks = [...assignedTasks, ...displayableCurrentTasks];
         // 3. Deep Fetch missing task details if they are not in the catalog
         const tasksNeedingInfo = combinedTasks.filter(t => {
-          const hasDetailsInCatalog = taskCatalog && taskCatalog[t.resolvedTaskId];
+          const hasDetailsInCatalog = Boolean(
+            resolveCatalogTaskRecord(taskCatalog, t.resolvedTaskId || t.id),
+          );
           const hasDetailsInTask = t.description || (t.raw && resolveLeafDescription(t.raw));
           return !hasDetailsInCatalog && !hasDetailsInTask;
         });
@@ -1313,7 +1428,10 @@ const DashboardScreen = ({ navigation }) => {
 
         // Re-normalize titles and descriptions after deep fetch
         const finalTasks = combinedTasks.map(t => {
-          const catalogEntry = taskCatalog[t.resolvedTaskId];
+          const catalogEntry = resolveCatalogTaskRecord(
+            taskCatalog,
+            t.resolvedTaskId || t.id,
+          );
           return {
             ...t,
             title: t.title && t.title !== t.resolvedTaskId ? t.title : (resolveLeafTitle(catalogEntry) || t.title),
@@ -1741,55 +1859,11 @@ const DashboardScreen = ({ navigation }) => {
             styles.fabWrap,
             {
               bottom: Math.max(insets.bottom + 16, 16),
-              zIndex: 20,
-              elevation: 20,
+              zIndex: 30,
+              elevation: 30,
             },
           ]}
         >
-          {fabOpen && (
-            <View style={[styles.fabMenuPanel, { zIndex: 21, elevation: 21 }]}>
-              <TouchableOpacity
-                style={styles.fabPanelItem}
-                onPress={() => handleAddTask('add_kpi')}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.fabPanelIcon, styles.fabIconKpi]}>
-                  <MaterialCommunityIcons
-                    name="clipboard-plus-outline"
-                    size={18}
-                    color={appTheme.colors.brand.primaryDark}
-                  />
-                </View>
-                <View>
-                  <Text style={styles.fabPanelTitle}>Add KPI Task</Text>
-                  <Text style={styles.fabPanelSubtitle}>Create a new KPI</Text>
-                </View>
-              </TouchableOpacity>
-
-              <View style={styles.fabDivider} />
-
-              <TouchableOpacity
-                style={styles.fabPanelItem}
-                onPress={() => handleAddTask('add_other')}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.fabPanelIcon, styles.fabIconOther]}>
-                  <MaterialCommunityIcons
-                    name="playlist-plus"
-                    size={18}
-                    color={appTheme.colors.brand.primaryDark}
-                  />
-                </View>
-                <View>
-                  <Text style={styles.fabPanelTitle}>Add Other Task</Text>
-                  <Text style={styles.fabPanelSubtitle}>
-                    Non-KPI assignment
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-          )}
-
           <TouchableOpacity
             style={styles.fabButton}
             onPress={() => setFabOpen(!fabOpen)}
@@ -1804,70 +1878,134 @@ const DashboardScreen = ({ navigation }) => {
         </View>
       </View>
 
+      <Modal
+        transparent
+        visible={fabOpen}
+        animationType="fade"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        onRequestClose={() => setFabOpen(false)}
+      >
+        <Pressable
+          style={[styles.menuOverlay, { flex: 1 }]}
+          onPress={() => setFabOpen(false)}
+        >
+          <View style={styles.menuSpacer} />
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View
+              style={[
+                styles.fabModalContent,
+                { bottom: Math.max(insets.bottom + 76, 76) },
+              ]}
+            >
+              <View style={styles.fabMenuPanel}>
+                <TouchableOpacity
+                  style={styles.fabPanelItem}
+                  onPress={() => handleAddTask('add_kpi')}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.fabPanelIcon, styles.fabIconKpi]}>
+                    <MaterialCommunityIcons
+                      name="clipboard-plus-outline"
+                      size={18}
+                      color={appTheme.colors.brand.primaryDark}
+                    />
+                  </View>
+                  <View>
+                    <Text style={styles.fabPanelTitle}>Add KPI Task</Text>
+                    <Text style={styles.fabPanelSubtitle}>
+                      Create a new KPI
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                <View style={styles.fabDivider} />
+
+                <TouchableOpacity
+                  style={styles.fabPanelItem}
+                  onPress={() => handleAddTask('add_other')}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.fabPanelIcon, styles.fabIconOther]}>
+                    <MaterialCommunityIcons
+                      name="playlist-plus"
+                      size={18}
+                      color={appTheme.colors.brand.primaryDark}
+                    />
+                  </View>
+                  <View>
+                    <Text style={styles.fabPanelTitle}>Add Other Task</Text>
+                    <Text style={styles.fabPanelSubtitle}>
+                      Non-KPI assignment
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </Pressable>
+      </Modal>
+
       {/* Menu Modal */}
       <Modal
         transparent
         visible={menuOpen}
-        animationType="none"
+        animationType="fade"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
         onRequestClose={() => setMenuOpen(false)}
       >
-        <View style={styles.menuOverlay}>
-          <Pressable
-            style={styles.menuBackdrop}
-            onPress={() => setMenuOpen(false)}
-          />
-          <Animated.View
-            style={[
-              styles.menuPanel,
-              { transform: [{ translateX: menuSlideAnim }] },
-            ]}
-          >
-            <Pressable
-              onPress={() => {
-                runAfterGesture(() => {
-                  setMenuOpen(false);
-                  navigation?.navigate?.('TaskMonitoring');
-                });
-              }}
-              style={({ pressed }) => [
-                styles.menuItem,
-                pressed && styles.menuItemPressed,
-              ]}
-            >
-              <View style={[styles.menuIcon, styles.menuIconPrimary]}>
-                <MaterialCommunityIcons
-                  name="clipboard-text-outline"
-                  size={18}
-                  color={appTheme.colors.brand.primaryDark}
-                />
-              </View>
-              <View style={styles.menuTextWrap}>
-                <Text style={styles.menuTitle}>Task Monitoring</Text>
-                <Text style={styles.menuSubtitle}>View overall status</Text>
-              </View>
-            </Pressable>
+        <Pressable style={[styles.menuOverlay, { flex: 1 }]} onPress={() => setMenuOpen(false)}>
+          <View style={styles.menuSpacer} />
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View style={styles.menuPanel}>
+              <Pressable
+                onPress={() => {
+                  runAfterGesture(() => {
+                    setMenuOpen(false);
+                    navigation?.navigate?.('TaskMonitoring');
+                  });
+                }}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  pressed && styles.menuItemPressed,
+                ]}
+              >
+                <View style={[styles.menuIcon, styles.menuIconPrimary]}>
+                  <MaterialCommunityIcons
+                    name="clipboard-text-outline"
+                    size={18}
+                    color={appTheme.colors.brand.primaryDark}
+                  />
+                </View>
+                <View style={styles.menuTextWrap}>
+                  <Text style={styles.menuTitle}>Task Monitoring</Text>
+                  <Text style={styles.menuSubtitle}>View overall status</Text>
+                </View>
+              </Pressable>
 
-            <Pressable
-              onPress={handleLogout}
-              style={({ pressed }) => [
-                styles.menuItem,
-                pressed && styles.menuItemPressed,
-              ]}
-            >
-              <View style={[styles.menuIcon, styles.menuIconDanger]}>
-                <MaterialCommunityIcons
-                  name="logout-variant"
-                  size={18}
-                  color={appTheme.colors.status.danger}
-                />
-              </View>
-              <View style={styles.menuTextWrap}>
-                <Text style={styles.menuTitle}>Logout</Text>
-                <Text style={styles.menuSubtitle}>Exit application</Text>
-              </View>
-            </Pressable>
-          </Animated.View>
-        </View>
+              <Pressable
+                onPress={handleLogout}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  pressed && styles.menuItemPressed,
+                ]}
+              >
+                <View style={[styles.menuIcon, styles.menuIconDanger]}>
+                  <MaterialCommunityIcons
+                    name="logout-variant"
+                    size={18}
+                    color={appTheme.colors.status.danger}
+                  />
+                </View>
+                <View style={styles.menuTextWrap}>
+                  <Text style={styles.menuTitle}>Logout</Text>
+                  <Text style={styles.menuSubtitle}>Exit application</Text>
+                </View>
+              </Pressable>
+            </View>
+          </TouchableWithoutFeedback>
+        </Pressable>
       </Modal>
 
 
@@ -2156,6 +2294,17 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     zIndex: 10,
   },
+  fabModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.25)',
+  },
+  fabModalContent: {
+    position: 'absolute',
+    right: 20,
+    alignItems: 'flex-end',
+    zIndex: 20,
+    elevation: 20,
+  },
   fabMenuPanel: {
     marginBottom: 16,
     padding: 8,
@@ -2221,16 +2370,16 @@ const styles = StyleSheet.create({
   },
   // --- Menu Overlay ---
   menuOverlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(15, 23, 42, 0.25)',
-    paddingTop: 72,
-    paddingRight: 20,
-    alignItems: 'flex-end',
   },
   menuBackdrop: {
     ...StyleSheet.absoluteFillObject,
   },
   menuPanel: {
+    position: 'absolute',
+    top: 72,
+    right: 20,
     width: 240,
     padding: 8,
     borderRadius: 20,
