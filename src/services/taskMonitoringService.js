@@ -1,6 +1,7 @@
 import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
 import { CITY, getCityStoragePrefix } from '../firebase/firebaseConfig';
+import { getTaskCatalog } from './taskCacheService';
 
 const getFirstText = (...values) => {
   for (const value of values) {
@@ -746,7 +747,7 @@ export const loadTasks = async selectedDate => {
     : [];
 
   const [taskCatalog, currentResult] = await Promise.all([
-    getData('IECData/Tasks'),
+    getTaskCatalog(),
     currentTaskPaths.length
       ? readFirstExistingPath(currentTaskPaths)
       : Promise.resolve({ path: null, value: null }),

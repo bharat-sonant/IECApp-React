@@ -1,6 +1,7 @@
 package com.iecapp
 
 import android.app.*
+import android.content.Context
 import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.location.Location
@@ -20,6 +21,7 @@ class LocationForegroundService : Service() {
         var isJsActive: Boolean = true
         private const val CHANNEL_ID = "iec_location_channel"
         private const val NOTIF_ID   = 2001
+        private const val DAILY_CUTOFF_HOUR = 23
 
         // Defaults
         private const val DEFAULT_GPS_INTERVAL_MS      = 5_000L
@@ -61,6 +63,10 @@ class LocationForegroundService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val minuteTick = object : Runnable {
         override fun run() {
+            if (isPastDailyCutoff()) {
+                stopForDailyCutoff()
+                return
+            }
             flushMinuteSnapshot()
             handler.postDelayed(this, snapshotIntervalMs)
         }
@@ -79,6 +85,7 @@ class LocationForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Reset state for new tracking session
+        LocationModule.clearRuntimeStopFlags(applicationContext)
         firstPointAdded = false
         minutePoints.clear()
         minuteDistance = 0f
@@ -98,6 +105,15 @@ class LocationForegroundService : Service() {
         stillStreak = 0
         movingStreak = 0
         lastAdaptiveLoc = null
+
+        if (LocationModule.shouldPreventRestartForTracking(applicationContext)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (isPastDailyCutoff()) {
+            stopForDailyCutoff()
+            return START_NOT_STICKY
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -128,6 +144,11 @@ class LocationForegroundService : Service() {
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
+
+                if (isPastDailyCutoff()) {
+                    stopForDailyCutoff()
+                    return
+                }
 
                 // First point always accepted (no accuracy filter), subsequent points filtered
                 val isFirstPoint = minutePoints.isEmpty()
@@ -273,6 +294,25 @@ class LocationForegroundService : Service() {
         }
         ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit("onMinuteSnapshot", map)
+    }
+
+    private fun isPastDailyCutoff(): Boolean {
+        val calendar = Calendar.getInstance()
+        return calendar.get(Calendar.HOUR_OF_DAY) >= DAILY_CUTOFF_HOUR
+    }
+
+    private fun stopForDailyCutoff() {
+        LocationModule.markAutoCutoffStopFlag(applicationContext)
+        fusedClient.removeLocationUpdates(locationCallback)
+        handler.removeCallbacks(minuteTick)
+        flushMinuteSnapshot()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
     }
 
     private fun bufferSnapshotToPrefs(path: String, dist: Double, time: String, date: String): Boolean {

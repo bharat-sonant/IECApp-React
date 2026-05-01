@@ -1,6 +1,7 @@
 package com.iecapp
 
 import android.content.Intent
+import android.content.Context
 import android.location.Geocoder
 import android.os.Build
 import android.net.Uri
@@ -11,6 +12,55 @@ import java.util.Locale
 
 class LocationModule(private val reactContext: ReactApplicationContext)
     : ReactContextBaseJavaModule(reactContext) {
+
+    companion object {
+        private const val RUNTIME_PREFS = "d2d_tracking_runtime"
+        private const val KEY_MANUAL_STOP = "manual_stop"
+        private const val KEY_AUTO_STOP_DATE = "auto_stop_date"
+        private const val DAILY_CUTOFF_HOUR = 23
+
+        fun todayKey(nowMs: Long = System.currentTimeMillis()): String {
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            return fmt.format(java.util.Date(nowMs))
+        }
+
+        private fun prefs(context: Context) =
+            context.getSharedPreferences(RUNTIME_PREFS, 0)
+
+        fun clearRuntimeStopFlags(context: Context) {
+            prefs(context).edit()
+                .remove(KEY_MANUAL_STOP)
+                .apply()
+        }
+
+        fun markManualStopFlag(context: Context) {
+            prefs(context).edit()
+                .putBoolean(KEY_MANUAL_STOP, true)
+                .apply()
+        }
+
+        fun markAutoCutoffStopFlag(context: Context) {
+            prefs(context).edit()
+                .remove(KEY_MANUAL_STOP)
+                .putString(KEY_AUTO_STOP_DATE, todayKey())
+                .apply()
+        }
+
+        fun shouldPreventRestartForTracking(context: Context): Boolean {
+            val sharedPrefs = prefs(context)
+            if (sharedPrefs.getBoolean(KEY_MANUAL_STOP, false)) {
+                return true
+            }
+            return sharedPrefs.getString(KEY_AUTO_STOP_DATE, null) == todayKey()
+        }
+
+        fun isPastDailyCutoff(nowMs: Long = System.currentTimeMillis()): Boolean {
+            val calendar = java.util.Calendar.getInstance().apply {
+                timeInMillis = nowMs
+            }
+            return calendar.get(java.util.Calendar.HOUR_OF_DAY) >= DAILY_CUTOFF_HOUR
+        }
+    }
 
     override fun getName() = "LocationTracker"
 
@@ -60,6 +110,7 @@ class LocationModule(private val reactContext: ReactApplicationContext)
     /** Start foreground service — location tracking begins */
     @ReactMethod
     fun startTracking() {
+        Companion.clearRuntimeStopFlags(reactContext.applicationContext)
         LocationForegroundService.reactContext = reactContext
         val intent = Intent(reactContext, LocationForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -75,6 +126,16 @@ class LocationModule(private val reactContext: ReactApplicationContext)
         val intent = Intent(reactContext, LocationForegroundService::class.java)
         reactContext.stopService(intent)
         LocationForegroundService.reactContext = null
+    }
+
+    @ReactMethod
+    fun clearTrackingStopFlags() {
+        Companion.clearRuntimeStopFlags(reactContext.applicationContext)
+    }
+
+    @ReactMethod
+    fun markManualStop() {
+        Companion.markManualStopFlag(reactContext.applicationContext)
     }
 
     /**

@@ -17,6 +17,8 @@ class LocationScreenStateReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_SCREEN_OFF,
             Intent.ACTION_USER_PRESENT -> {
+                if (LocationModule.shouldPreventRestartForTracking(context)) return
+                if (LocationModule.isPastDailyCutoff()) return
                 val serviceIntent = Intent(context, LocationForegroundService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(serviceIntent)

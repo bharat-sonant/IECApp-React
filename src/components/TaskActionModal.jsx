@@ -38,6 +38,7 @@ import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
 import { saveTaskSubmission } from '../services/taskService';
 import { beginAppStateSuppression } from '../services/appStateGuard';
+import { getTaskCatalog } from '../services/taskCacheService';
 
 const inlineToastStyles = {
   warning: {
@@ -532,25 +533,25 @@ const TaskActionModal = ({
   useEffect(() => {
     let isActive = true;
 
-    const loadTaskCatalog = async () => {
-      if (!visible) {
-        if (isActive) {
-          setTaskCatalog(null);
-        }
-        return;
-      }
+     const loadTaskCatalog = async () => {
+       if (!visible) {
+         if (isActive) {
+           setTaskCatalog(null);
+         }
+         return;
+       }
 
-      try {
-        const catalog = await getData('IECData/Tasks');
-        if (isActive) {
-          setTaskCatalog(catalog && typeof catalog === 'object' ? catalog : null);
-        }
-      } catch (error) {
-        if (isActive) {
-          setTaskCatalog(null);
-        }
-      }
-    };
+       try {
+         const catalog = await getTaskCatalog();
+         if (isActive) {
+           setTaskCatalog(catalog && typeof catalog === 'object' ? catalog : null);
+         }
+       } catch (error) {
+         if (isActive) {
+           setTaskCatalog(null);
+         }
+       }
+     };
 
     loadTaskCatalog();
 
@@ -1070,16 +1071,16 @@ const TaskActionModal = ({
       return dedupeTaskOptions(choices);
     }
 
-    if (mode === 'add_other') {
-      const payload = await getData('IECData/Tasks');
-      const choices = [];
+     if (mode === 'add_other') {
+       const payload = await getTaskCatalog();
+       const choices = [];
 
-      collectOtherTaskChoices(choices, payload);
+       collectOtherTaskChoices(choices, payload);
 
-      return dedupeTaskOptions(choices).filter(item =>
-        isTaskOptionVisible(item, payload),
-      );
-    }
+       return dedupeTaskOptions(choices).filter(item =>
+         isTaskOptionVisible(item, payload),
+       );
+     }
 
     return [];
   }, [mode]);
@@ -1395,6 +1396,43 @@ const TaskActionModal = ({
     setFieldErrors(prev => ({ ...prev, images: false }));
   };
 
+  const pickImageFromGallery = async () => {
+    if (images.length >= 5) {
+      showInlineToast('You can only attach up to 5 images.', 'warning');
+      return;
+    }
+    try {
+      const remainingSlots = 5 - images.length;
+      beginAppStateSuppression(8000);
+      const result = await launchImageLibrary({
+        mediaType: 'photo',
+        selectionLimit: remainingSlots,
+        quality: 0.8,
+      });
+
+      if (result.didCancel || result.errorCode || !result.assets) {
+        return;
+      }
+
+      const pickedUris = result.assets
+        .map(asset => asset?.uri)
+        .filter(Boolean)
+        .slice(0, remainingSlots);
+
+      if (!pickedUris.length) {
+        return;
+      }
+
+      setImages(prev => [...prev, ...pickedUris].slice(0, 5));
+      setFieldErrors(prev => ({ ...prev, images: false }));
+    } catch (err) {
+      showAlert({
+        title: 'Image Upload Error',
+        message: err?.message || 'Image upload नहीं हो पाया। कृपया दोबारा कोशिश करें।',
+      });
+    }
+  };
+
   const captureVideo = async () => {
     if (videos.length >= 2) {
       showInlineToast('आप केवल 2 वीडियो तक जोड़ सकते हैं।', 'warning');
@@ -1704,7 +1742,22 @@ const TaskActionModal = ({
                             size={32}
                             color={appTheme.colors.brand.primary}
                           />
-                          <Text style={styles.uploadSmallText}>Add Photo</Text>
+                          <Text style={styles.uploadSmallText}>Capture</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {images.length < 5 && (
+                        <TouchableOpacity
+                          style={[styles.previewCard, styles.uploadDashedBox]}
+                          activeOpacity={0.7}
+                          onPress={pickImageFromGallery}
+                        >
+                          <MaterialCommunityIcons
+                            name="image-plus"
+                            size={32}
+                            color={appTheme.colors.brand.primary}
+                          />
+                          <Text style={styles.uploadSmallText}>Upload</Text>
                         </TouchableOpacity>
                       )}
 

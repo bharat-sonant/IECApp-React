@@ -31,12 +31,13 @@ import { clearSharedMediaFiles } from '../services/sharedMediaService';
 import { clearMediaCache } from '../services/mediaCacheService';
 import { useAppFeedback } from '../components/AppFeedback';
 import { useLocation } from '../context/LocationContext';
-import {
-  saveDashboardTaskCache,
-  readTaskCatalogCache,
-  saveTaskCatalogCache,
-  clearTaskCache,
-} from '../services/taskCacheService';
+ import {
+   saveDashboardTaskCache,
+   readDashboardTaskCache,
+   saveTaskCatalogCache,
+   clearTaskCache,
+   getTaskCatalog,
+ } from '../services/taskCacheService';
 
 const isPlainObject = value =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -1412,21 +1413,8 @@ const DashboardScreen = ({ navigation }) => {
           `IECData/IECTasks/${loginId}/${dateParts.year}/${dateParts.monthName}/${dateParts.isoDate}`,
         ];
 
-        // 2. Load the latest catalog from Firebase first, then fall back to cache
-        let taskCatalog = {};
-        try {
-          const freshCatalog = await getData('IECData/Tasks');
-          if (freshCatalog && typeof freshCatalog === 'object') {
-            taskCatalog = freshCatalog;
-            await saveTaskCatalogCache(freshCatalog);
-          }
-        } catch (catalogError) {
-          taskCatalog = (await readTaskCatalogCache()) || {};
-        }
-
-        if (!taskCatalog || typeof taskCatalog !== 'object') {
-          taskCatalog = (await readTaskCatalogCache()) || {};
-        }
+        // 2. Load task catalog (cached or fresh)
+        const taskCatalog = await getTaskCatalog();
 
         const debugTaskId = '22';
         const debugCatalogRecord =

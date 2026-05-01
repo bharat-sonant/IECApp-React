@@ -57,7 +57,10 @@ export const isIgnoringBatteryOptimizations = async () => {
  * Call setTrackingConfig() first if you want custom intervals.
  */
 export const startLocationTracking = () => {
-  if (Platform.OS === 'android') LocationTracker.startTracking();
+  if (Platform.OS === 'android') {
+    LocationTracker.clearTrackingStopFlags?.();
+    LocationTracker.startTracking();
+  }
 };
 
 /**
@@ -65,7 +68,10 @@ export const startLocationTracking = () => {
  * Call this on logout or end duty.
  */
 export const stopLocationTracking = () => {
-  if (Platform.OS === 'android') LocationTracker.stopTracking();
+  if (Platform.OS === 'android') {
+    LocationTracker.markManualStop?.();
+    LocationTracker.stopTracking();
+  }
 };
 
 /**

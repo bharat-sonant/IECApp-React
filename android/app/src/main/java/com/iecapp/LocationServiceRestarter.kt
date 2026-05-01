@@ -17,6 +17,8 @@ class LocationServiceRestarter : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION) return
+        if (LocationModule.shouldPreventRestartForTracking(context)) return
+        if (LocationModule.isPastDailyCutoff()) return
         val serviceIntent = Intent(context, LocationForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)

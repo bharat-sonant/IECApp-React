@@ -1,3 +1,4 @@
+import { getData } from '../firebase/firebaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const TASK_CACHE_PREFIX = 'dashboard_tasks_cache';
@@ -52,6 +53,19 @@ const saveTaskCatalogCache = async catalog => {
   await AsyncStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify(catalog));
 };
 
+const getTaskCatalog = async () => {
+  const cached = await readTaskCatalogCache();
+  if (cached) {
+    return cached;
+  }
+  const fresh = await getData('IECData/Tasks');
+  if (fresh && typeof fresh === 'object') {
+    await saveTaskCatalogCache(fresh);
+    return fresh;
+  }
+  return cached || {};
+};
+
 const clearTaskCache = async () => {
   try {
     const allKeys = await AsyncStorage.getAllKeys();
@@ -71,5 +85,6 @@ export {
   saveDashboardTaskCache,
   readTaskCatalogCache,
   saveTaskCatalogCache,
+  getTaskCatalog,
   clearTaskCache,
 };

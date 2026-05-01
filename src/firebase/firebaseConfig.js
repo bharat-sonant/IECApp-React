@@ -1,12 +1,21 @@
 // Environment configs for IEC app
 const DEVTEST_CONFIG = {
-  apiKey: 'AIzaSyBNHi7UP5nwqLnFU2tuKpArS1MhZDYsiLM',
-  authDomain: 'devtest-62768.firebaseapp.com',
-  databaseURL: 'https://devtest-62768-default-rtdb.firebaseio.com',
-  projectId: 'devtest-62768',
-  storageBucket: 'devtest-62768.firebasestorage.app',
-  messagingSenderId: '799504409644',
-  appId: '1:799504409644:android:8ce294ed91867118cedd89',
+  "cityName": "DevTest",
+  "city": "devtest",
+  "key": "MNZ",
+  "dbPath": "https://devtest-62768-default-rtdb.firebaseio.com/",
+  "storagePath": "gs://devtest-62768.firebasestorage.app/DevTest",
+  "empCode": "DEV",
+  "firebaseStoragePath": "https://firebasestorage.googleapis.com/v0/b/devtest-62768.firebasestorage.app/o/",
+  "apiKey": "AIzaSyBNHi7UP5nwqLnFU2tuKpArS1MhZDYsiLM",
+  "appId": "1:799504409644:android:8ce294ed91867118cedd89",
+  "authDomain": "devtest-62768.firebaseapp.com",
+  "databaseURL": "https://devtest-62768-default-rtdb.firebaseio.com",
+  "projectId": "devtest-62768",
+  "storageBucket": "devtest-62768.firebasestorage.app",
+  "messagingSenderId": "799504409644",
+  "databaseName": "devtest-62768-default-rtdb",
+  "isUCCApplied": "yes"
 };
 
 export const Jaipur_Office = {
