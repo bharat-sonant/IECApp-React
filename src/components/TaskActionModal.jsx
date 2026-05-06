@@ -1505,7 +1505,7 @@ const TaskActionModal = ({
   const inlineToastTheme = inlineToast
     ? (inlineToastStyles[inlineToast.variant] ?? inlineToastStyles.warning)
     : inlineToastStyles.warning;
-  const dropdownSheetMaxHeight = Dimensions.get('window').height * 0.5;
+  const dropdownSheetMaxHeight = Dimensions.get('window').height * 0.65;
 
   return (
     <>
@@ -1894,6 +1894,65 @@ const TaskActionModal = ({
               </KeyboardAvoidingView>
             </View>
 
+            {inlineToast ? (
+              <View pointerEvents="none" style={styles.inlineToastWrap}>
+                <View
+                  style={[
+                    styles.inlineToast,
+                    {
+                      borderColor: inlineToastTheme.borderColor,
+                      backgroundColor: inlineToastTheme.surfaceBg,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.inlineToastAccent,
+                      { backgroundColor: inlineToastTheme.accentColor },
+                    ]}
+                  />
+                  <MaterialCommunityIcons
+                    name={inlineToastTheme.icon}
+                    size={18}
+                    color={inlineToastTheme.accentColor}
+                    style={styles.inlineToastIcon}
+                  />
+                  <View style={styles.inlineToastTextWrap}>
+                    <Text
+                      style={[
+                        styles.inlineToastTitle,
+                        { color: inlineToastTheme.labelText },
+                      ]}
+                    >
+                      {inlineToastTheme.label}
+                    </Text>
+                    <Text style={styles.inlineToastText} numberOfLines={2}>
+                      {inlineToast.message}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.bottomBar}>
+              <TouchableOpacity
+                style={[styles.submitBtn, isSaving && styles.submitBtnDisabled]}
+                onPress={handleSave}
+                activeOpacity={0.85}
+                disabled={isSaving}
+              >
+                <Text style={styles.submitBtnText}>
+                  {isSaving ? 'Saving...' : 'Submit Task'}
+                </Text>
+                <MaterialCommunityIcons
+                  name="arrow-right"
+                  size={20}
+                  color="#FFF"
+                  style={{ marginLeft: 8 }}
+                />
+              </TouchableOpacity>
+            </View>
+
             {dropdownOpen ? (
               <View style={styles.dropdownOverlay} pointerEvents="box-none">
                 <TouchableOpacity
@@ -1981,65 +2040,6 @@ const TaskActionModal = ({
                 </View>
               </View>
             ) : null}
-
-            {inlineToast ? (
-              <View pointerEvents="none" style={styles.inlineToastWrap}>
-                <View
-                  style={[
-                    styles.inlineToast,
-                    {
-                      borderColor: inlineToastTheme.borderColor,
-                      backgroundColor: inlineToastTheme.surfaceBg,
-                    },
-                  ]}
-                >
-                  <View
-                    style={[
-                      styles.inlineToastAccent,
-                      { backgroundColor: inlineToastTheme.accentColor },
-                    ]}
-                  />
-                  <MaterialCommunityIcons
-                    name={inlineToastTheme.icon}
-                    size={18}
-                    color={inlineToastTheme.accentColor}
-                    style={styles.inlineToastIcon}
-                  />
-                  <View style={styles.inlineToastTextWrap}>
-                    <Text
-                      style={[
-                        styles.inlineToastTitle,
-                        { color: inlineToastTheme.labelText },
-                      ]}
-                    >
-                      {inlineToastTheme.label}
-                    </Text>
-                    <Text style={styles.inlineToastText} numberOfLines={2}>
-                      {inlineToast.message}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            ) : null}
-
-            <View style={styles.bottomBar}>
-              <TouchableOpacity
-                style={[styles.submitBtn, isSaving && styles.submitBtnDisabled]}
-                onPress={handleSave}
-                activeOpacity={0.85}
-                disabled={isSaving}
-              >
-                <Text style={styles.submitBtnText}>
-                  {isSaving ? 'Saving...' : 'Submit Task'}
-                </Text>
-                <MaterialCommunityIcons
-                  name="arrow-right"
-                  size={20}
-                  color="#FFF"
-                  style={{ marginLeft: 8 }}
-                />
-              </TouchableOpacity>
-            </View>
           </SafeAreaView>
         </Animated.View>
       </Modal>
@@ -2357,7 +2357,7 @@ const styles = StyleSheet.create({
   },
   dropdownScrollContent: {
     paddingTop: 4,
-    paddingBottom: 20, // Extra padding so the last item isn't cut off inside constrained scrollview
+    paddingBottom: Platform.OS === 'ios' ? 40 : 28,
   },
   dropdownItem: {
     flexDirection: 'row',
