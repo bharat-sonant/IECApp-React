@@ -86,6 +86,14 @@ const buildOldTaskPayload = ({
   remark,
   ward,
   participants,
+  maleCount,
+  femaleCount,
+  otherCount,
+  ageBelow18,
+  age18to30,
+  age31to45,
+  age46to60,
+  ageAbove60,
   taskChoice,
   currentDateTime,
   latitude,
@@ -142,11 +150,28 @@ const buildOldTaskPayload = ({
     address: asString(address),
     type: taskTypeValue,
     remark: asString(remark),
-    wardNo: asString(ward),
     noOfParticipants: asString(participants),
     taskCategory,
     status: '1',
   };
+
+  const optionalFields = {
+    wardNo: ward,
+    maleCount,
+    femaleCount,
+    otherCount,
+    ageBelow18,
+    age18to30,
+    age31to45,
+    age46to60,
+    ageAbove60,
+  };
+  Object.entries(optionalFields).forEach(([key, value]) => {
+    const v = asString(value);
+    if (v !== '') {
+      payload[key] = v;
+    }
+  });
 
   return payload;
 };
@@ -236,6 +261,14 @@ export const saveTaskSubmission = async ({
   selectedTask,
   ward,
   participants,
+  maleCount,
+  femaleCount,
+  otherCount,
+  ageBelow18,
+  age18to30,
+  age31to45,
+  age46to60,
+  ageAbove60,
   remark,
   images,
   videos,
@@ -290,6 +323,14 @@ export const saveTaskSubmission = async ({
     remark,
     ward,
     participants,
+    maleCount,
+    femaleCount,
+    otherCount,
+    ageBelow18,
+    age18to30,
+    age31to45,
+    age46to60,
+    ageAbove60,
     taskChoice,
     currentDateTime,
     latitude: location?.latitude ?? STATIC_LOCATION.latitude,
@@ -430,5 +471,6 @@ export const saveTaskSubmission = async ({
 
   return {
     ok: true,
+    uploadStoragePaths: [...imageStoragePaths, ...videoStoragePaths],
   };
 };

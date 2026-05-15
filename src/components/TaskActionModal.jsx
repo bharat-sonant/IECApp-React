@@ -39,6 +39,7 @@ import { loadLoginSession } from '../services/sessionService';
 import { saveTaskSubmission } from '../services/taskService';
 import { beginAppStateSuppression } from '../services/appStateGuard';
 import { getTaskCatalog } from '../services/taskCacheService';
+import { getPendingMediaUploads } from '../services/pendingUploadService';
 
 const inlineToastStyles = {
   warning: {
@@ -463,8 +464,20 @@ const TaskActionModal = ({
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [savingMessage, setSavingMessage] = useState('Saving task...');
+  const [savingSubMessage, setSavingSubMessage] = useState(
+    'Please wait while the task is being submitted.',
+  );
   const [ward, setWard] = useState('');
   const [participants, setParticipants] = useState('');
+  const [maleCount, setMaleCount] = useState('');
+  const [femaleCount, setFemaleCount] = useState('');
+  const [otherCount, setOtherCount] = useState('');
+  const [ageBelow18, setAgeBelow18] = useState('');
+  const [age18to30, setAge18to30] = useState('');
+  const [age31to45, setAge31to45] = useState('');
+  const [age46to60, setAge46to60] = useState('');
+  const [ageAbove60, setAgeAbove60] = useState('');
   const [remark, setRemark] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [inlineToast, setInlineToast] = useState(null);
@@ -516,6 +529,14 @@ const TaskActionModal = ({
     } else {
       setWard('');
       setParticipants('');
+      setMaleCount('');
+      setFemaleCount('');
+      setOtherCount('');
+      setAgeBelow18('');
+      setAge18to30('');
+      setAge31to45('');
+      setAge46to60('');
+      setAgeAbove60('');
       setRemark('');
       setImages([]);
       setVideos([]);
@@ -579,6 +600,76 @@ const TaskActionModal = ({
       return nextErrors;
     });
   };
+
+  useEffect(() => {
+    const n = parseInt(String(participants || '').trim(), 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      setMaleCount('');
+      setFemaleCount('');
+      setOtherCount('');
+      setAgeBelow18('');
+      setAge18to30('');
+      setAge31to45('');
+      setAge46to60('');
+      setAgeAbove60('');
+    }
+  }, [participants]);
+
+  useEffect(() => {
+    const toInt = v => {
+      const n = parseInt(String(v || '').trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+    const total = toInt(participants);
+    const genderSum =
+      toInt(maleCount) + toInt(femaleCount) + toInt(otherCount);
+    if (genderSum === total) {
+      setFieldErrors(prev => {
+        if (!prev.maleCount && !prev.femaleCount && !prev.otherCount) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next.maleCount;
+        delete next.femaleCount;
+        delete next.otherCount;
+        return next;
+      });
+    }
+  }, [maleCount, femaleCount, otherCount, participants]);
+
+  useEffect(() => {
+    const toInt = v => {
+      const n = parseInt(String(v || '').trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+    const total = toInt(participants);
+    const ageSum =
+      toInt(ageBelow18) +
+      toInt(age18to30) +
+      toInt(age31to45) +
+      toInt(age46to60) +
+      toInt(ageAbove60);
+    if (ageSum === total) {
+      setFieldErrors(prev => {
+        if (
+          !prev.ageBelow18 &&
+          !prev.age18to30 &&
+          !prev.age31to45 &&
+          !prev.age46to60 &&
+          !prev.ageAbove60
+        ) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next.ageBelow18;
+        delete next.age18to30;
+        delete next.age31to45;
+        delete next.age46to60;
+        delete next.ageAbove60;
+        return next;
+      });
+    }
+  }, [ageBelow18, age18to30, age31to45, age46to60, ageAbove60, participants]);
 
   const showInlineToast = (message, variant = 'warning') => {
     if (inlineToastTimerRef.current) {
@@ -1260,18 +1351,74 @@ const TaskActionModal = ({
       return;
     }
 
+    // Section 01 — Task
     if (!selectedTaskParam) {
       setFieldErrors({ selectedTask: true });
       showInlineToast('Please select a task.', 'warning');
       return;
     }
 
-    if (!remark.trim()) {
-      setFieldErrors({ remark: true });
-      showInlineToast('Remark / description is required.', 'warning');
+    // Section 02 — Activity Info
+    if (!ward.trim()) {
+      setFieldErrors({ ward: true });
+      showInlineToast('Please enter Ward Number.', 'warning');
       return;
     }
 
+    // Section 03 — Participant Details (only when total > 0)
+    const toInt = v => {
+      const n = parseInt(String(v || '').trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+    const participantsNum = toInt(participants);
+    const genderSum =
+      toInt(maleCount) + toInt(femaleCount) + toInt(otherCount);
+    const ageSum =
+      toInt(ageBelow18) +
+      toInt(age18to30) +
+      toInt(age31to45) +
+      toInt(age46to60) +
+      toInt(ageAbove60);
+
+    if (participantsNum > 0) {
+      if (genderSum !== participantsNum) {
+        setFieldErrors({
+          maleCount: true,
+          femaleCount: true,
+          otherCount: true,
+        });
+        showAlert({
+          title: 'Gender Count Mismatch',
+          message:
+            `Gender (Male + Female + Other) मिलाकर ${genderSum} हैं, ` +
+            `पर Total Participants ${participantsNum} है। ` +
+            `कृपया Gender count सही करें।`,
+          variant: 'warning',
+        });
+        return;
+      }
+
+      if (ageSum !== participantsNum) {
+        setFieldErrors({
+          ageBelow18: true,
+          age18to30: true,
+          age31to45: true,
+          age46to60: true,
+          ageAbove60: true,
+        });
+        showAlert({
+          title: 'Age Group Count Mismatch',
+          message:
+            `Age Groups (Below 18 + 18–30 + 31–45 + 46–60 + Above 60) ` +
+            `मिलाकर ${ageSum} हैं, पर Total Participants ${participantsNum} है। ` +
+            `कृपया Age count सही करें।`,
+          variant: 'warning',
+        });
+        return;
+      }
+    }
+
+    // Section 04 — Photos
     if (!images.length) {
       setFieldErrors(prev => ({ ...prev, images: true }));
       showInlineToast(
@@ -1281,6 +1428,15 @@ const TaskActionModal = ({
       return;
     }
 
+    // Section 05 — Remark
+    if (!remark.trim()) {
+      setFieldErrors({ remark: true });
+      showInlineToast('Remark is required.', 'warning');
+      return;
+    }
+
+    setSavingMessage('Saving task...');
+    setSavingSubMessage('Please wait while the task is being submitted.');
     setIsSaving(true);
     let capturedLocation = {
       latitude: 0,
@@ -1343,7 +1499,7 @@ const TaskActionModal = ({
       delete taskWithoutOriginalPath.originalPath;
       delete taskWithoutOriginalPath.raw;
 
-      await saveTaskSubmission({
+      const saveResult = await saveTaskSubmission({
         mode,
         selectedTask: {
           ...taskWithoutOriginalPath,
@@ -1361,15 +1517,74 @@ const TaskActionModal = ({
           taskType: normalizedTaskCategory === 'Priority' ? 'priority' : taskWithoutOriginalPath.type,
         },
         ward: ward.trim(),
-        participants: participants.trim(),
+        participants: String(participantsNum),
+        maleCount: maleCount.trim() === '' ? '' : String(toInt(maleCount)),
+        femaleCount: femaleCount.trim() === '' ? '' : String(toInt(femaleCount)),
+        otherCount: otherCount.trim() === '' ? '' : String(toInt(otherCount)),
+        ageBelow18: ageBelow18.trim() === '' ? '' : String(toInt(ageBelow18)),
+        age18to30: age18to30.trim() === '' ? '' : String(toInt(age18to30)),
+        age31to45: age31to45.trim() === '' ? '' : String(toInt(age31to45)),
+        age46to60: age46to60.trim() === '' ? '' : String(toInt(age46to60)),
+        ageAbove60: ageAbove60.trim() === '' ? '' : String(toInt(ageAbove60)),
         remark: remark.trim(),
         images,
         videos,
         location: capturedLocation,
       });
 
+      // Wait for current task's media uploads to complete (with timeout)
+      const ourPaths = Array.isArray(saveResult?.uploadStoragePaths)
+        ? saveResult.uploadStoragePaths
+        : [];
+      const totalMedia = ourPaths.length;
+      if (totalMedia > 0) {
+        const UPLOAD_WAIT_TIMEOUT_MS = 20000;
+        const POLL_INTERVAL_MS = 800;
+        const startedAt = Date.now();
+        let lastPending = totalMedia;
+
+        setSavingMessage(`Uploading media (0/${totalMedia})...`);
+        setSavingSubMessage('Please keep the app open.');
+
+        while (Date.now() - startedAt < UPLOAD_WAIT_TIMEOUT_MS) {
+          let queue = [];
+          try {
+            queue = await getPendingMediaUploads();
+          } catch {
+            break;
+          }
+          const pendingOurs = queue.filter(it =>
+            ourPaths.includes(String(it?.storagePath || '')),
+          ).length;
+          const done = totalMedia - pendingOurs;
+          if (pendingOurs !== lastPending) {
+            lastPending = pendingOurs;
+            setSavingMessage(`Uploading media (${done}/${totalMedia})...`);
+          }
+          if (pendingOurs === 0) {
+            break;
+          }
+          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+        }
+      }
+
       setFieldErrors({});
-      showToast('Task details have been submitted.', 'success');
+      // Final message based on remaining pending
+      let finalToast = 'Task details have been submitted.';
+      if (totalMedia > 0) {
+        try {
+          const queue = await getPendingMediaUploads();
+          const stillPending = queue.filter(it =>
+            ourPaths.includes(String(it?.storagePath || '')),
+          ).length;
+          if (stillPending > 0) {
+            finalToast = `Task submitted. ${stillPending} file(s) uploading in background.`;
+          }
+        } catch {
+          // Ignore
+        }
+      }
+      showToast(finalToast, 'success');
       onSaved?.();
       onClose();
     } catch (error) {
@@ -1507,6 +1722,13 @@ const TaskActionModal = ({
     : inlineToastStyles.warning;
   const dropdownSheetMaxHeight = Dimensions.get('window').height * 0.65;
 
+  const participantsParsed = parseInt(
+    String(participants || '').trim(),
+    10,
+  );
+  const showParticipantDetails =
+    Number.isFinite(participantsParsed) && participantsParsed > 0;
+
   return (
     <>
       <ReusableCamera
@@ -1516,8 +1738,8 @@ const TaskActionModal = ({
       />
       <CommonLoader
         visible={isSaving}
-        message="Saving task..."
-        subMessage="Please wait while the task is being submitted."
+        message={savingMessage}
+        subMessage={savingSubMessage}
       />
       <Modal
         visible={visible}
@@ -1569,319 +1791,588 @@ const TaskActionModal = ({
                   nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
                 >
+                  {/* Section 01 — Task */}
                   <View
                     style={[
-                      styles.inputGroup,
+                      styles.section,
                       {
                         zIndex: 100,
                         ...(Platform.OS === 'android'
-                          ? { elevation: dropdownOpen ? 10 : 0 }
+                          ? { elevation: dropdownOpen ? 10 : 2 }
                           : {}),
                       },
                     ]}
                   >
-                    <View style={styles.labelRow}>
-                      <Text style={styles.label}>
-                        Task <Text style={styles.reqStar}>*</Text>
-                      </Text>
-                      {selectedTaskParam && (
+                    <View style={styles.sectionHead}>
+                      <View style={styles.sectionBadge}>
+                        <Text style={styles.sectionBadgeText}>01</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sectionTitle}>Task Selection</Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Choose the activity you completed
+                        </Text>
+                      </View>
+                      {selectedTaskParam ? (
                         <TouchableOpacity
-                          style={styles.labelInfoBtn}
+                          style={styles.sectionAction}
                           onPress={() => setInfoModalVisible(true)}
                           activeOpacity={0.7}
                         >
                           <MaterialCommunityIcons
-                            name="information-outline"
+                            name="eye-outline"
                             size={14}
                             color={appTheme.colors.brand.primary}
                           />
-                          <Text style={styles.labelInfoText}>View Details</Text>
+                          <Text style={styles.sectionActionText}>Details</Text>
                         </TouchableOpacity>
-                      )}
+                      ) : null}
                     </View>
-                    {mode !== 'pick_task' && (
-                      <Text style={styles.dropdownHint}>
-                        Tap the field to open the dropdown
-                      </Text>
-                    )}
+
                     {mode === 'pick_task' ? (
                       <View
                         style={[
-                          styles.pickerSelector,
-                          styles.pickerSelectorLocked,
-                          fieldErrors.selectedTask ? styles.inputError : null,
+                          styles.taskPicker,
+                          styles.taskPickerLocked,
+                          fieldErrors.selectedTask
+                            ? styles.taskPickerError
+                            : null,
                         ]}
                       >
-                        <View style={styles.pickerContent}>
+                        <View style={styles.taskPickerIconWrap}>
                           <MaterialCommunityIcons
-                            name="clipboard-check-outline"
+                            name="clipboard-check"
                             size={20}
                             color={appTheme.colors.brand.primary}
-                            style={styles.pickerIcon}
                           />
-                          <View style={styles.pickerTextWrap}>
-                            <Text style={styles.pickerText}>
-                              {selectedTaskParam || 'Selected task'}
-                            </Text>
-                          </View>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.taskPickerLabel}>
+                            Selected Task
+                          </Text>
+                          <Text
+                            style={styles.taskPickerValue}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                          >
+                            {selectedTaskParam || '—'}
+                          </Text>
                         </View>
                         <MaterialCommunityIcons
                           name="lock-outline"
                           size={18}
-                          color={appTheme.colors.neutral.textMuted}
+                          color="#94A3B8"
                         />
                       </View>
                     ) : (
                       <View style={styles.dropdownWrap}>
                         <TouchableOpacity
                           style={[
-                            styles.pickerSelector,
-                            fieldErrors.selectedTask ? styles.inputError : null,
+                            styles.taskPicker,
+                            fieldErrors.selectedTask
+                              ? styles.taskPickerError
+                              : null,
                           ]}
-                          activeOpacity={0.7}
-                          onPress={() => {
-                            setDropdownOpen(prev => !prev);
-                          }}
+                          activeOpacity={0.75}
+                          onPress={() => setDropdownOpen(prev => !prev)}
                         >
-                          <View style={styles.pickerContent}>
+                          <View style={styles.taskPickerIconWrap}>
                             <MaterialCommunityIcons
-                              name="clipboard-check-outline"
+                              name="clipboard-list-outline"
                               size={20}
                               color={appTheme.colors.brand.primary}
-                              style={styles.pickerIcon}
                             />
-                            <View style={styles.pickerTextWrap}>
-                              <Text
-                                style={[
-                                  styles.pickerText,
-                                  !selectedTaskParam && styles.pickerPlaceholder,
-                                ]}
-                              >
-                                {selectedTaskParam
-                                  ? selectedTaskParam
-                                  : getDropdownPlaceholder()}
-                              </Text>
-                            </View>
-
                           </View>
-                          <MaterialCommunityIcons
-                            name={dropdownOpen ? 'chevron-up' : 'chevron-down'}
-                            size={22}
-                            color={appTheme.colors.neutral.textMuted}
-                          />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.taskPickerLabel}>
+                              Task <Text style={styles.reqStar}>*</Text>
+                            </Text>
+                            <Text
+                              style={[
+                                styles.taskPickerValue,
+                                !selectedTaskParam &&
+                                  styles.taskPickerPlaceholder,
+                              ]}
+                              numberOfLines={1}
+                              ellipsizeMode="tail"
+                            >
+                              {selectedTaskParam || getDropdownPlaceholder()}
+                            </Text>
+                          </View>
+                          <View style={styles.taskPickerChevron}>
+                            <MaterialCommunityIcons
+                              name={
+                                dropdownOpen ? 'chevron-up' : 'chevron-down'
+                              }
+                              size={20}
+                              color={appTheme.colors.brand.primary}
+                            />
+                          </View>
                         </TouchableOpacity>
                       </View>
                     )}
                   </View>
 
-                  <View style={styles.rowGrid}>
-                    <View style={[styles.inputGroup, { flex: 1, marginRight: 12 }]}>
-                      <Text style={styles.label}>
-                        Ward No.
-                      </Text>
-                      <TextInput
-                        style={[
-                          styles.input,
-                          fieldErrors.ward ? styles.inputError : null,
-                        ]}
-                        placeholder="Ex: 14A"
-                        placeholderTextColor="#94A3B8"
-                        value={ward}
-                        onChangeText={updateField(setWard, 'ward')}
-                        keyboardType="default"
-                        editable={!isSaving}
-                      />
+                  {/* Section 02 — Activity Info */}
+                  <View style={styles.section}>
+                    <View style={styles.sectionHead}>
+                      <View style={styles.sectionBadge}>
+                        <Text style={styles.sectionBadgeText}>02</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sectionTitle}>Activity Info</Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Where it happened and total people
+                        </Text>
+                      </View>
                     </View>
-                    <View style={[styles.inputGroup, { flex: 1 }]}>
-                      <Text style={styles.label}>
-                        Participants
-                      </Text>
-                      <TextInput
-                        style={[
-                          styles.input,
-                          fieldErrors.participants ? styles.inputError : null,
-                        ]}
-                        placeholder="Total count"
-                        placeholderTextColor="#94A3B8"
-                        value={participants}
-                        onChangeText={updateField(setParticipants, 'participants')}
-                        keyboardType="numeric"
-                        editable={!isSaving}
-                      />
+
+                    <View style={styles.row2}>
+                      <View style={styles.row2Cell}>
+                        <Text style={styles.fieldLabel}>
+                          Ward Number <Text style={styles.reqStar}>*</Text>
+                        </Text>
+                        <View
+                          style={[
+                            styles.iconInput,
+                            fieldErrors.ward && styles.iconInputError,
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name="map-marker-outline"
+                            size={18}
+                            color="#94A3B8"
+                          />
+                          <TextInput
+                            style={styles.iconInputField}
+                            placeholder="Ex: 14A"
+                            placeholderTextColor="#CBD5E1"
+                            value={ward}
+                            onChangeText={updateField(setWard, 'ward')}
+                            editable={!isSaving}
+                          />
+                        </View>
+                      </View>
+
+                      <View style={styles.row2Cell}>
+                        <Text style={styles.fieldLabel}>Total Participants</Text>
+                        <View
+                          style={[
+                            styles.iconInput,
+                            fieldErrors.participants &&
+                              styles.iconInputError,
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name="account-group-outline"
+                            size={18}
+                            color="#94A3B8"
+                          />
+                          <TextInput
+                            style={styles.iconInputField}
+                            placeholder="0"
+                            placeholderTextColor="#CBD5E1"
+                            value={participants}
+                            onChangeText={txt =>
+                              updateField(
+                                setParticipants,
+                                'participants',
+                              )(String(txt).replace(/[^0-9]/g, ''))
+                            }
+                            keyboardType="numeric"
+                            editable={!isSaving}
+                          />
+                        </View>
+                      </View>
                     </View>
                   </View>
 
-                  <View style={styles.mediaSection}>
-                    <View style={styles.mediaHeaderRow}>
-                      <View>
-                        <Text style={styles.mediaTitle}>
-                          Task Photos (1 required) <Text style={styles.reqStar}>*</Text>
+                  {/* Section 03 — Participant Details (only when total > 0) */}
+                  {showParticipantDetails ? (
+                  <View style={styles.section}>
+                    <View style={styles.sectionHead}>
+                      <View style={styles.sectionBadge}>
+                        <Text style={styles.sectionBadgeText}>03</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sectionTitle}>
+                          Participant Details
                         </Text>
-                        <Text style={styles.mediaSubtitle}>
-                          Take clear pictures of the work
+                        <Text style={styles.sectionSubtitle}>
+                          Count must match total participants
                         </Text>
                       </View>
-                      <Text style={styles.mediaCount}>{images.length} / 5</Text>
                     </View>
 
-                    {fieldErrors.images ? (
-                      <Text style={styles.mediaErrorText}>
-                        At least one photo is required.
-                      </Text>
-                    ) : null}
-
-                    <View style={styles.mediaGrid}>
-                      {images.length < 5 && (
-                        <TouchableOpacity
-                          style={[styles.previewCard, styles.uploadDashedBox]}
-                          activeOpacity={0.7}
-                          onPress={captureImage}
-                        >
-                          <MaterialCommunityIcons
-                            name="camera-plus"
-                            size={32}
-                            color={appTheme.colors.brand.primary}
-                          />
-                          <Text style={styles.uploadSmallText}>Capture</Text>
-                        </TouchableOpacity>
-                      )}
-
-                      {images.length < 5 && (
-                        <TouchableOpacity
-                          style={[styles.previewCard, styles.uploadDashedBox]}
-                          activeOpacity={0.7}
-                          onPress={pickImageFromGallery}
-                        >
-                          <MaterialCommunityIcons
-                            name="image-plus"
-                            size={32}
-                            color={appTheme.colors.brand.primary}
-                          />
-                          <Text style={styles.uploadSmallText}>Upload</Text>
-                        </TouchableOpacity>
-                      )}
-
-                      {images.map((imgUri, index) => (
-                        <TouchableOpacity
-                          key={`image-preview-${index}`}
-                          style={styles.previewCard}
-                          activeOpacity={0.8}
-                          onPress={() => setPreviewImage(imgUri)}
-                        >
-                          <Image
-                            source={{ uri: imgUri }}
-                            style={styles.previewImg}
-                          />
-                          <TouchableOpacity
-                            style={styles.removeMediaBtn}
-                            onPress={() => {
-                              const newImgs = [...images];
-                              newImgs.splice(index, 1);
-                              setImages(newImgs);
-                            }}
+                    <Text style={styles.subHead}>Gender</Text>
+                    <View style={styles.tileRow}>
+                      {[
+                        {
+                          label: 'Male',
+                          value: maleCount,
+                          setter: setMaleCount,
+                          errKey: 'maleCount',
+                          icon: 'gender-male',
+                          color: '#3B82F6',
+                        },
+                        {
+                          label: 'Female',
+                          value: femaleCount,
+                          setter: setFemaleCount,
+                          errKey: 'femaleCount',
+                          icon: 'gender-female',
+                          color: '#EC4899',
+                        },
+                        {
+                          label: 'Other',
+                          value: otherCount,
+                          setter: setOtherCount,
+                          errKey: 'otherCount',
+                          icon: 'gender-non-binary',
+                          color: '#8B5CF6',
+                        },
+                      ].map(item => (
+                        <View key={item.errKey} style={styles.genderTile}>
+                          <View
+                            style={[
+                              styles.genderTileIcon,
+                              { backgroundColor: `${item.color}1A` },
+                            ]}
                           >
                             <MaterialCommunityIcons
-                              name="close"
-                              size={14}
-                              color="#FFF"
+                              name={item.icon}
+                              size={18}
+                              color={item.color}
                             />
-                          </TouchableOpacity>
-                        </TouchableOpacity>
+                          </View>
+                          <Text style={styles.genderTileLabel}>
+                            {item.label}
+                          </Text>
+                          <TextInput
+                            style={[
+                              styles.genderTileInput,
+                              fieldErrors[item.errKey] &&
+                                styles.genderTileInputError,
+                            ]}
+                            value={item.value ? String(item.value) : ''}
+                            onChangeText={txt =>
+                              updateField(
+                                item.setter,
+                                item.errKey,
+                              )(String(txt).replace(/[^0-9]/g, ''))
+                            }
+                            placeholder="0"
+                            placeholderTextColor="#CBD5E1"
+                            keyboardType="numeric"
+                            editable={!isSaving}
+                            selectTextOnFocus
+                          />
+                        </View>
+                      ))}
+                    </View>
+
+                    <Text style={[styles.subHead, { marginTop: 18 }]}>
+                      Age Group
+                    </Text>
+                    <View style={styles.ageList}>
+                      {[
+                        {
+                          label: 'Below 18',
+                          value: ageBelow18,
+                          setter: setAgeBelow18,
+                          errKey: 'ageBelow18',
+                          icon: 'baby-face-outline',
+                          color: '#10B981',
+                        },
+                        {
+                          label: '18 – 30',
+                          value: age18to30,
+                          setter: setAge18to30,
+                          errKey: 'age18to30',
+                          icon: 'account-outline',
+                          color: '#0EA5E9',
+                        },
+                        {
+                          label: '31 – 45',
+                          value: age31to45,
+                          setter: setAge31to45,
+                          errKey: 'age31to45',
+                          icon: 'account-tie-outline',
+                          color: '#F59E0B',
+                        },
+                        {
+                          label: '46 – 60',
+                          value: age46to60,
+                          setter: setAge46to60,
+                          errKey: 'age46to60',
+                          icon: 'account-clock-outline',
+                          color: '#EF4444',
+                        },
+                        {
+                          label: 'Above 60',
+                          value: ageAbove60,
+                          setter: setAgeAbove60,
+                          errKey: 'ageAbove60',
+                          icon: 'human-cane',
+                          color: '#6366F1',
+                        },
+                      ].map(item => (
+                        <View key={item.errKey} style={styles.ageRow}>
+                          <View
+                            style={[
+                              styles.ageRowIcon,
+                              { backgroundColor: `${item.color}1A` },
+                            ]}
+                          >
+                            <MaterialCommunityIcons
+                              name={item.icon}
+                              size={16}
+                              color={item.color}
+                            />
+                          </View>
+                          <Text style={styles.ageRowLabel}>{item.label}</Text>
+                          <TextInput
+                            style={[
+                              styles.ageRowInput,
+                              fieldErrors[item.errKey] &&
+                                styles.ageRowInputError,
+                            ]}
+                            value={item.value ? String(item.value) : ''}
+                            onChangeText={txt =>
+                              updateField(
+                                item.setter,
+                                item.errKey,
+                              )(String(txt).replace(/[^0-9]/g, ''))
+                            }
+                            placeholder="0"
+                            placeholderTextColor="#CBD5E1"
+                            keyboardType="numeric"
+                            editable={!isSaving}
+                            selectTextOnFocus
+                          />
+                        </View>
                       ))}
                     </View>
                   </View>
+                  ) : null}
 
-                  <View style={styles.mediaSection}>
-                    <View style={styles.mediaHeaderRow}>
-                      <View>
-                        <Text style={styles.mediaTitle}>
-                          Task Video{' '}
-                          <Text style={styles.optionalText}>(Optional)</Text>
-                        </Text>
-                        <Text style={styles.mediaSubtitle}>
-                          Keep it under 30 seconds
+                  {/* Section 04 — Photos & Video */}
+                  <View style={styles.section}>
+                    <View style={styles.sectionHead}>
+                      <View style={styles.sectionBadge}>
+                        <Text style={styles.sectionBadgeText}>04</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sectionTitle}>Photos & Video</Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Capture or upload supporting media
                         </Text>
                       </View>
-                      <Text style={styles.mediaCount}>{videos.length} / 2</Text>
                     </View>
 
-                    <View style={styles.mediaGrid}>
-                      {isCompressing ? (
-                        <View style={[styles.previewCard, styles.compressingCard]}>
-                          <ActivityIndicator
-                            size="large"
-                            color={appTheme.colors.brand.primary}
-                          />
-                          <Text style={styles.compressingText}>Compressing...</Text>
+                    <View style={styles.mediaBlock}>
+                      <View style={styles.mediaBlockHead}>
+                        <MaterialCommunityIcons
+                          name="image-multiple-outline"
+                          size={16}
+                          color="#475569"
+                        />
+                        <Text style={styles.mediaBlockTitle}>
+                          Photos <Text style={styles.reqStar}>*</Text>
+                        </Text>
+                        <View style={styles.mediaPill}>
+                          <Text style={styles.mediaPillText}>
+                            {images.length} of 5
+                          </Text>
                         </View>
-                      ) : (
-                        videos.length < 2 && (
+                      </View>
+                      {fieldErrors.images ? (
+                        <Text style={styles.mediaErrorText}>
+                          At least one photo is required.
+                        </Text>
+                      ) : null}
+                      <View style={styles.mediaGrid}>
+                        {images.length < 5 && (
                           <TouchableOpacity
-                            style={[styles.previewCard, styles.uploadDashedBox]}
+                            style={[
+                              styles.previewCard,
+                              styles.uploadDashedBox,
+                            ]}
                             activeOpacity={0.7}
-                            onPress={captureVideo}
+                            onPress={captureImage}
                           >
                             <MaterialCommunityIcons
-                              name="video-plus"
-                              size={32}
+                              name="camera-plus"
+                              size={28}
                               color={appTheme.colors.brand.primary}
                             />
-                            <Text style={styles.uploadSmallText}>Add Video</Text>
+                            <Text style={styles.uploadSmallText}>Capture</Text>
                           </TouchableOpacity>
-                        )
-                      )}
-
-                      {videos.map((videoItem, index) => (
-                        <View key={`video-preview-${index}`} style={styles.previewCard}>
-                          {videoItem.thumbnailUri ? (
-                            <Image
-                              source={{ uri: videoItem.thumbnailUri }}
-                              style={styles.previewImg}
-                            />
-                          ) : (
-                            <View style={styles.videoPlaceholder}>
-                              <MaterialCommunityIcons
-                                name="play-circle"
-                                size={38}
-                                color="#FFF"
-                              />
-                            </View>
-                          )}
+                        )}
+                        {images.length < 5 && (
                           <TouchableOpacity
-                            style={styles.removeMediaBtn}
-                            onPress={() => {
-                              const newVids = [...videos];
-                              newVids.splice(index, 1);
-                              setVideos(newVids);
-                            }}
+                            style={[
+                              styles.previewCard,
+                              styles.uploadDashedBox,
+                            ]}
+                            activeOpacity={0.7}
+                            onPress={pickImageFromGallery}
                           >
                             <MaterialCommunityIcons
-                              name="close"
-                              size={14}
-                              color="#FFF"
+                              name="image-plus"
+                              size={28}
+                              color={appTheme.colors.brand.primary}
                             />
+                            <Text style={styles.uploadSmallText}>Upload</Text>
                           </TouchableOpacity>
+                        )}
+                        {images.map((imgUri, index) => (
+                          <TouchableOpacity
+                            key={`image-preview-${index}`}
+                            style={styles.previewCard}
+                            activeOpacity={0.8}
+                            onPress={() => setPreviewImage(imgUri)}
+                          >
+                            <Image
+                              source={{ uri: imgUri }}
+                              style={styles.previewImg}
+                            />
+                            <TouchableOpacity
+                              style={styles.removeMediaBtn}
+                              onPress={() => {
+                                const newImgs = [...images];
+                                newImgs.splice(index, 1);
+                                setImages(newImgs);
+                              }}
+                            >
+                              <MaterialCommunityIcons
+                                name="close"
+                                size={14}
+                                color="#FFF"
+                              />
+                            </TouchableOpacity>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+
+                    <View style={[styles.mediaBlock, { marginTop: 14 }]}>
+                      <View style={styles.mediaBlockHead}>
+                        <MaterialCommunityIcons
+                          name="video-outline"
+                          size={16}
+                          color="#475569"
+                        />
+                        <Text style={styles.mediaBlockTitle}>
+                          Video{' '}
+                          <Text style={styles.optionalText}>(Optional)</Text>
+                        </Text>
+                        <View style={styles.mediaPill}>
+                          <Text style={styles.mediaPillText}>
+                            {videos.length} of 2
+                          </Text>
                         </View>
-                      ))}
+                      </View>
+                      <View style={styles.mediaGrid}>
+                        {isCompressing ? (
+                          <View
+                            style={[
+                              styles.previewCard,
+                              styles.compressingCard,
+                            ]}
+                          >
+                            <ActivityIndicator
+                              size="large"
+                              color={appTheme.colors.brand.primary}
+                            />
+                            <Text style={styles.compressingText}>
+                              Compressing...
+                            </Text>
+                          </View>
+                        ) : (
+                          videos.length < 2 && (
+                            <TouchableOpacity
+                              style={[
+                                styles.previewCard,
+                                styles.uploadDashedBox,
+                              ]}
+                              activeOpacity={0.7}
+                              onPress={captureVideo}
+                            >
+                              <MaterialCommunityIcons
+                                name="video-plus"
+                                size={28}
+                                color={appTheme.colors.brand.primary}
+                              />
+                              <Text style={styles.uploadSmallText}>
+                                Add Video
+                              </Text>
+                            </TouchableOpacity>
+                          )
+                        )}
+                        {videos.map((videoItem, index) => (
+                          <View
+                            key={`video-preview-${index}`}
+                            style={styles.previewCard}
+                          >
+                            {videoItem.thumbnailUri ? (
+                              <Image
+                                source={{ uri: videoItem.thumbnailUri }}
+                                style={styles.previewImg}
+                              />
+                            ) : (
+                              <View style={styles.videoPlaceholder}>
+                                <MaterialCommunityIcons
+                                  name="play-circle"
+                                  size={38}
+                                  color="#FFF"
+                                />
+                              </View>
+                            )}
+                            <TouchableOpacity
+                              style={styles.removeMediaBtn}
+                              onPress={() => {
+                                const newVids = [...videos];
+                                newVids.splice(index, 1);
+                                setVideos(newVids);
+                              }}
+                            >
+                              <MaterialCommunityIcons
+                                name="close"
+                                size={14}
+                                color="#FFF"
+                              />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
                     </View>
                   </View>
 
-                  <View style={styles.divider} />
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>
-                      Remarks / Description <Text style={styles.reqStar}>*</Text>
-                    </Text>
+                  {/* Section 05 — Description */}
+                  <View style={styles.section}>
+                    <View style={styles.sectionHead}>
+                      <View style={styles.sectionBadge}>
+                        <Text style={styles.sectionBadgeText}>05</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sectionTitle}>
+                          Remark <Text style={styles.reqStar}>*</Text>
+                        </Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Briefly describe about the activity
+                        </Text>
+                      </View>
+                    </View>
                     <TextInput
                       style={[
-                        styles.input,
-                        styles.textArea,
-                        fieldErrors.remark ? styles.inputError : null,
+                        styles.descInput,
+                        fieldErrors.remark && styles.descInputError,
                       ]}
-                      placeholder="Write observation details here..."
+                      placeholder="Write your remark here..."
                       placeholderTextColor="#94A3B8"
                       multiline
-                      numberOfLines={4}
+                      numberOfLines={5}
                       value={remark}
                       onChangeText={updateField(setRemark, 'remark')}
                       textAlignVertical="top"
@@ -2118,83 +2609,338 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '900',
+    fontSize: 18,
+    fontWeight: '700',
     color: '#0F172A',
+    letterSpacing: -0.2,
   },
   headerSubtitle: {
     fontSize: 12,
     color: '#64748B',
     marginTop: 2,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   scrollContent: {
-    padding: 20,
-    paddingTop: 24,
-  },
-  inputGroup: {
-    marginBottom: 20,
-  },
-  rowGrid: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  labelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#475569',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  labelInfoBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(18, 59, 74, 0.05)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  labelInfoText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: appTheme.colors.brand.primary,
+    padding: 16,
+    paddingTop: 18,
+    paddingBottom: 24,
   },
   reqStar: {
     color: '#EF4444',
   },
-  input: {
-    backgroundColor: '#FFF',
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    color: '#0F172A',
-    minHeight: 56,
-  },
   inputError: {
     borderColor: '#DC3545',
-    backgroundColor: 'rgba(220, 53, 69, 0.04)',
+    backgroundColor: 'rgba(220, 53, 69, 0.05)',
   },
-  textArea: {
-    minHeight: 120,
-    paddingTop: 16,
-    paddingBottom: 16,
+  // ─────── New design: Section card ───────
+  section: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#EEF2F7',
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    marginBottom: 14,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  sectionBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: appTheme.colors.brand.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    shadowColor: appTheme.colors.brand.primary,
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  sectionBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.2,
+  },
+  sectionSubtitle: {
+    fontSize: 11.5,
+    color: '#94A3B8',
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  sectionAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(18, 59, 74, 0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    gap: 4,
+  },
+  sectionActionText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: appTheme.colors.brand.primary,
+  },
+  // ─── Task picker
+  taskPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    padding: 12,
+    gap: 12,
+  },
+  taskPickerLocked: {
+    backgroundColor: '#F1F5F9',
+    borderStyle: 'dashed',
+  },
+  taskPickerError: {
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(220, 38, 38, 0.05)',
+  },
+  taskPickerIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: 'rgba(18, 59, 74, 0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  taskPickerLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748B',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  taskPickerValue: {
+    fontSize: 14.5,
+    color: '#0F172A',
+    fontWeight: '700',
+  },
+  taskPickerPlaceholder: {
+    color: '#94A3B8',
+    fontWeight: '500',
+  },
+  taskPickerChevron: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  // ─── Row layout
+  row2: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  row2Cell: {
+    flex: 1,
+  },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 6,
+    letterSpacing: 0.2,
+  },
+  iconInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    minHeight: 46,
+    gap: 8,
+  },
+  iconInputError: {
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(220, 38, 38, 0.04)',
+  },
+  iconInputField: {
+    flex: 1,
+    fontSize: 15,
+    color: '#0F172A',
+    fontWeight: '600',
+    paddingVertical: 0,
+  },
+  // ─── Demographics
+  subHead: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+  },
+  tileRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  genderTile: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#EEF2F7',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  genderTileIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  genderTileLabel: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 6,
+  },
+  genderTileInput: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+    minHeight: 38,
+    textAlign: 'center',
+  },
+  genderTileInputError: {
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(220, 38, 38, 0.04)',
+  },
+  ageList: {
+    gap: 8,
+  },
+  ageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#EEF2F7',
+  },
+  ageRowIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  ageRowLabel: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  ageRowInput: {
+    width: 80,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+    minHeight: 38,
+    textAlign: 'center',
+  },
+  ageRowInputError: {
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(220, 38, 38, 0.04)',
+  },
+  // ─── Media block
+  mediaBlock: {},
+  mediaBlockHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+  },
+  mediaBlockTitle: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#334155',
+    letterSpacing: 0.3,
+  },
+  mediaPill: {
+    backgroundColor: 'rgba(18, 59, 74, 0.10)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  mediaPillText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: appTheme.colors.brand.primary,
+    letterSpacing: 0.2,
+  },
+  // ─── Description
+  descInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    fontSize: 14.5,
+    color: '#0F172A',
+    fontWeight: '500',
+    minHeight: 110,
+  },
+  descInputError: {
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(220, 38, 38, 0.04)',
   },
   pickerSelector: {
-    backgroundColor: '#FFF',
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    minHeight: 56,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -2398,59 +3144,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  divider: {
-    height: 1.5,
-    backgroundColor: '#E2E8F0',
-    marginVertical: 24,
-  },
-  mediaSection: {
-    marginBottom: 28,
-  },
-  mediaHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  mediaTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#0F172A',
-    marginBottom: 2,
-  },
   optionalText: {
     fontSize: 11,
-    fontWeight: '600',
-    color: '#94A3B8',
-  },
-  mediaSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
     fontWeight: '500',
+    color: '#94A3B8',
   },
   mediaErrorText: {
     color: '#DC2626',
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '600',
     marginBottom: 8,
-  },
-  mediaCount: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: appTheme.colors.brand.primary,
-    backgroundColor: 'rgba(18, 59, 74, 0.08)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
   },
   mediaGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    paddingTop: 8,
-    paddingBottom: 4,
   },
   uploadDashedBox: {
-    borderWidth: 2,
+    borderWidth: 1,
     borderStyle: 'dashed',
     borderColor: '#CBD5E1',
     backgroundColor: '#F8FAFC',
@@ -2461,26 +3171,21 @@ const styles = StyleSheet.create({
   },
   uploadSmallText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '600',
     color: appTheme.colors.brand.primary,
-    marginTop: 6,
+    marginTop: 4,
   },
   previewCard: {
-    width: 100,
-    height: 100,
-    borderRadius: 16,
-    marginRight: 12,
-    marginBottom: 12,
+    width: 84,
+    height: 84,
+    borderRadius: 12,
+    marginRight: 10,
+    marginBottom: 10,
     backgroundColor: '#FFF',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: '#E5E7EB',
     overflow: 'hidden',
     position: 'relative',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
   },
   fullScreenPreviewBg: {
     flex: 1,
@@ -2515,13 +3220,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   compressingCard: {
-    width: 100,
-    height: 100,
-    borderRadius: 16,
-    marginRight: 12,
-    marginBottom: 12,
+    width: 84,
+    height: 84,
+    borderRadius: 12,
+    marginRight: 10,
+    marginBottom: 10,
     backgroundColor: '#F8FAFC',
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderStyle: 'dashed',
     borderColor: '#CBD5E1',
     alignItems: 'center',
@@ -2529,18 +3234,18 @@ const styles = StyleSheet.create({
   },
   compressingText: {
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '600',
     color: appTheme.colors.brand.primary,
-    marginTop: 6,
+    marginTop: 4,
   },
   removeMediaBtn: {
     position: 'absolute',
-    top: 6,
-    right: 6,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    top: 4,
+    right: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2600,32 +3305,33 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: '#FFF',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 32 : 16,
     borderTopWidth: 1,
     borderTopColor: '#F1F5F9',
     shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: -6 },
-    elevation: 10,
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 8,
   },
   submitBtn: {
     backgroundColor: appTheme.colors.brand.primary,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 56,
-    borderRadius: 16,
+    height: 50,
+    borderRadius: 12,
   },
   submitBtnDisabled: {
-    opacity: 0.72,
+    opacity: 0.6,
   },
   submitBtnText: {
     color: '#FFF',
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
 });
 

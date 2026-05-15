@@ -21,6 +21,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import appTheme from '../theme/appTheme';
 import CommonLoader from '../components/CommonLoader';
+import PendingUploadIndicator from '../components/PendingUploadIndicator';
 import { getData } from '../firebase/firebaseService';
 import { FIREBASE_CONFIG, getCityStoragePrefix } from '../firebase/firebaseConfig';
 import {
@@ -1898,6 +1899,7 @@ const DashboardScreen = ({ navigation }) => {
 
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Tasks</Text>
+            <PendingUploadIndicator />
           </View>
         </View>
 
@@ -2232,11 +2234,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 10,
+    minHeight: 36,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '900',
     color: appTheme.colors.neutral.text,
+    lineHeight: 22,
+    includeFontPadding: false,
   },
   seeAll: {
     fontSize: 13,

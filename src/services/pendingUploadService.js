@@ -2,6 +2,32 @@ import { uploadFileToStorage } from '../firebase/firebaseService';
 
 const STORAGE_KEY = '@iec_pending_media_uploads';
 let queueLock = Promise.resolve();
+
+const queueListeners = new Set();
+const notifyQueueListeners = count => {
+  for (const fn of queueListeners) {
+    try {
+      fn(count);
+    } catch {
+      // Ignore listener errors
+    }
+  }
+};
+
+export const subscribePendingMediaQueue = listener => {
+  if (typeof listener !== 'function') {
+    return () => {};
+  }
+  queueListeners.add(listener);
+  return () => {
+    queueListeners.delete(listener);
+  };
+};
+
+export const getPendingMediaUploadsCount = async () => {
+  const queue = await readQueue();
+  return queue.length;
+};
 const MAX_IMAGE_UPLOAD_BYTES = 50 * 1024;
 const IMAGE_UPLOAD_DIMENSION = 800;
 const IMAGE_QUALITY_STEPS = [80, 70, 60, 50, 40, 30];
@@ -169,6 +195,7 @@ export const enqueuePendingMediaUpload = async item => {
 
     queue.push(nextItem);
     await writeQueue(queue);
+    notifyQueueListeners(queue.length);
     return nextItem;
   });
 };
@@ -180,6 +207,7 @@ export const removePendingMediaUpload = async id => {
     const queue = await readQueue();
     const nextQueue = queue.filter(item => item?.id !== id);
     await writeQueue(nextQueue);
+    notifyQueueListeners(nextQueue.length);
   });
 };
 
@@ -205,34 +233,48 @@ export const flushPendingMediaUploads = async () => {
       if (!localPath || !storagePath) {
         failed += 1;
         nextQueue.push(item);
-        continue;
+      } else {
+        try {
+          let uploadPath = localPath;
+          let cleanupPath = null;
+
+          if (contentType.startsWith('image/')) {
+            const prepared = await prepareImageForUpload(localPath);
+            uploadPath = prepared.path;
+            cleanupPath = prepared.cleanupPath;
+          }
+
+          const uploadResult = await uploadFileToStorage(
+            storagePath,
+            uploadPath,
+            contentType,
+          );
+          if (!uploadResult || uploadResult.success !== true) {
+            throw new Error(
+              uploadResult?.error ||
+                `Upload failed for ${storagePath}`,
+            );
+          }
+          if (cleanupPath) {
+            await removeQueueItemFile(cleanupPath);
+          }
+          succeeded += 1;
+        } catch {
+          failed += 1;
+          nextQueue.push({
+            ...item,
+            retries: Number(item?.retries || 0) + 1,
+          });
+        }
       }
 
-      try {
-        let uploadPath = localPath;
-        let cleanupPath = null;
-
-        if (contentType.startsWith('image/')) {
-          const prepared = await prepareImageForUpload(localPath);
-          uploadPath = prepared.path;
-          cleanupPath = prepared.cleanupPath;
-        }
-
-        await uploadFileToStorage(storagePath, uploadPath, contentType);
-        if (cleanupPath) {
-          await removeQueueItemFile(cleanupPath);
-        }
-        succeeded += 1;
-      } catch {
-        failed += 1;
-        nextQueue.push({
-          ...item,
-          retries: Number(item?.retries || 0) + 1,
-        });
-      }
+      // Notify mid-flight: pending = items not yet processed + items kept in nextQueue
+      const remainingNow = queue.length - processed + nextQueue.length;
+      notifyQueueListeners(remainingNow);
     }
 
     await writeQueue(nextQueue);
+    notifyQueueListeners(nextQueue.length);
     return {
       processed,
       succeeded,
