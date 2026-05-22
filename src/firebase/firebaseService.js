@@ -84,19 +84,31 @@ export const uploadFileToStorage = async (storagePath, localFilePath, contentTyp
       return {success: false, error: 'Missing storagePath/localFilePath'};
     }
 
-    const {getStorage} = require('@react-native-firebase/storage');
+    const {getStorage, ref, putFile} = require('@react-native-firebase/storage');
     const rawPath = String(localFilePath);
     const normalizedPath = rawPath.startsWith('file://') ? rawPath.slice(7) : rawPath;
 
-    const fileRef = getStorage(await ensureApp()).ref(storagePath);
+    const storage = getStorage(await ensureApp());
+    const fileRef = ref(storage, storagePath);
+
     try {
-      await fileRef.putFile(normalizedPath, {contentType});
-    } catch {
-      await fileRef.putFile(rawPath, {contentType});
+      await putFile(fileRef, normalizedPath, {contentType});
+    } catch (firstError) {
+      // Fallback: try with raw path (some platforms need file:// prefix)
+      try {
+        await putFile(fileRef, rawPath, {contentType});
+      } catch (secondError) {
+        return {
+          success: false,
+          error:
+            secondError?.message ||
+            firstError?.message ||
+            'Upload failed',
+        };
+      }
     }
 
-    const directUrl = await fileRef.getDownloadURL();
-    return {success: true, data: directUrl};
+    return {success: true};
   } catch (error) {
     return {success: false, error: error?.message || String(error)};
   }

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  InteractionManager,
+  ActivityIndicator,
   FlatList,
   Modal,
   Pressable,
@@ -21,7 +21,10 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import appTheme from '../theme/appTheme';
 import CommonLoader from '../components/CommonLoader';
-import PendingUploadIndicator from '../components/PendingUploadIndicator';
+import {
+  getPendingMediaCountsByTaskRef,
+  subscribePendingMediaQueue,
+} from '../services/pendingUploadService';
 import { getData } from '../firebase/firebaseService';
 import { FIREBASE_CONFIG, getCityStoragePrefix } from '../firebase/firebaseConfig';
 import {
@@ -1274,6 +1277,29 @@ const DashboardScreen = ({ navigation }) => {
   const [batteryPromptChecked, setBatteryPromptChecked] = useState(false);
   const [trackingPermissionGranted, setTrackingPermissionGranted] = useState(false);
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
+  const [pendingUploadMap, setPendingUploadMap] = useState(new Map());
+
+  useEffect(() => {
+    let isMounted = true;
+    const refresh = async () => {
+      try {
+        const map = await getPendingMediaCountsByTaskRef();
+        if (isMounted) {
+          setPendingUploadMap(map);
+        }
+      } catch {
+        // Ignore
+      }
+    };
+    refresh();
+    const unsubscribe = subscribePendingMediaQueue(() => {
+      refresh();
+    });
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
   const { showAlert } = useAppFeedback();
   const TaskActionModal = actionModalVisible
     ? require('../components/TaskActionModal').default
@@ -1580,7 +1606,8 @@ const DashboardScreen = ({ navigation }) => {
       }
     };
 
-    const interactionHandle = InteractionManager.runAfterInteractions(() => {
+    // Defer initial load until after current frame/gesture finishes
+    const rafId = requestAnimationFrame(() => {
       if (isActive) {
         loadTasks();
       }
@@ -1588,7 +1615,7 @@ const DashboardScreen = ({ navigation }) => {
 
     return () => {
       isActive = false;
-      interactionHandle?.cancel?.();
+      cancelAnimationFrame(rafId);
     };
   }, [loginId, tasksReloadToken]);
 
@@ -1754,7 +1781,18 @@ const DashboardScreen = ({ navigation }) => {
   };
 
   const renderTask = ({ item }) => {
-    const status = STATUS_META[item.status] ?? STATUS_META.Pending;
+    const taskRef = String(
+      item?.originalPath || item?.raw?.originalPath || '',
+    ).trim();
+    const pendingUploadCount = taskRef
+      ? Number(pendingUploadMap.get(taskRef) || 0)
+      : 0;
+    const isUploading = pendingUploadCount > 0;
+    const totalMedia =
+      Number(item?.images || 0) + Number(item?.videos || 0);
+    const uploadedMedia = Math.max(0, totalMedia - pendingUploadCount);
+    const displayStatusKey = isUploading ? 'Pending' : item.status;
+    const status = STATUS_META[displayStatusKey] ?? STATUS_META.Pending;
     const taskTag = resolveTaskTag(item);
     const taskPriorityChip = resolveTaskPriorityChip(item);
 
@@ -1821,13 +1859,45 @@ const DashboardScreen = ({ navigation }) => {
             </Text>
           </View>
 
-          {item.status !== 'Pending' && !!getCompletionDisplayValue(item) && (
-            <Text style={styles.taskDateRight}>
-              {formatCompletionDate(getCompletionDisplayValue(item))}
-            </Text>
-          )}
+          {isUploading ? (
+            <View style={styles.uploadingChip}>
+              <ActivityIndicator
+                size="small"
+                color={appTheme.colors.brand.primary}
+              />
+              <View>
+                <Text style={styles.uploadingChipText}>
+                  Uploading {uploadedMedia}/{totalMedia || pendingUploadCount}
+                </Text>
+                <View style={styles.uploadProgressTrack}>
+                  <View
+                    style={[
+                      styles.uploadProgressFill,
+                      {
+                        width:
+                          totalMedia > 0
+                            ? `${Math.min(
+                                100,
+                                (uploadedMedia / totalMedia) * 100,
+                              )}%`
+                            : '0%',
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+          ) : null}
 
-          {item.status === 'Pending' && (
+          {!isUploading &&
+            item.status !== 'Pending' &&
+            !!getCompletionDisplayValue(item) && (
+              <Text style={styles.taskDateRight}>
+                {formatCompletionDate(getCompletionDisplayValue(item))}
+              </Text>
+            )}
+
+          {!isUploading && item.status === 'Pending' && (
             <TouchableOpacity
               style={styles.actionBtn}
               onPress={() => handleTaskAction(item)}
@@ -1899,7 +1969,6 @@ const DashboardScreen = ({ navigation }) => {
 
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Tasks</Text>
-            <PendingUploadIndicator />
           </View>
         </View>
 
@@ -2387,6 +2456,34 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 12,
     fontWeight: '800',
+  },
+  uploadingChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  uploadingChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: appTheme.colors.brand.primary,
+    letterSpacing: 0.2,
+  },
+  uploadProgressTrack: {
+    marginTop: 4,
+    width: 70,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(18, 59, 74, 0.10)',
+    overflow: 'hidden',
+  },
+  uploadProgressFill: {
+    height: '100%',
+    backgroundColor: appTheme.colors.brand.accent,
+    borderRadius: 999,
   },
   // --- FAB Menu ---
   fabWrap: {

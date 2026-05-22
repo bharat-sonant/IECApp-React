@@ -15,6 +15,7 @@ import {
   TextInput,
   ScrollView,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Image,
   StatusBar,
@@ -39,7 +40,6 @@ import { loadLoginSession } from '../services/sessionService';
 import { saveTaskSubmission } from '../services/taskService';
 import { beginAppStateSuppression } from '../services/appStateGuard';
 import { getTaskCatalog } from '../services/taskCacheService';
-import { getPendingMediaUploads } from '../services/pendingUploadService';
 
 const inlineToastStyles = {
   warning: {
@@ -80,8 +80,10 @@ const inlineToastStyles = {
   },
 };
 
+const MAX_IMAGES = 10;
 const TARGET_VIDEO_MAX_BYTES = 15 * 1024 * 1024;
-const VIDEO_COMPRESSION_STEPS = [720, 640, 540, 480, 360, 240];
+// Reduced manual fallback steps (only used if 'auto' mode fails)
+const VIDEO_COMPRESSION_STEPS = [540, 360, 240];
 const MAX_UPLOADABLE_VIDEO_SIZE_BYTES = 100 * 1024 * 1024;
 
 const getFileSizeBytes = async uri => {
@@ -112,17 +114,29 @@ const getVideoSourceInfo = source => {
   };
 };
 
+const withTimeout = (promise, ms, label = 'Operation') =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms,
+      );
+    }),
+  ]);
+
 const compressionAttempts = (sourceInfo) => {
   const { fileSizeBytes, durationSeconds } = getVideoSourceInfo(sourceInfo);
 
   // 100MB+ ya 45 second se lambi file ke liye aggressive compression mode
   const isVeryLarge = fileSizeBytes > 100 * 1024 * 1024 || durationSeconds > 45;
 
+  // Lower starting bitrate so first attempt already produces small file
   const attempts = VIDEO_COMPRESSION_STEPS.map((maxSize, index) => ({
     maxSize, // Video width/height scaling
     bitrate: isVeryLarge
-      ? Math.max(120000, 500000 - index * 90000)
-      : Math.max(180000, 800000 - index * 120000),
+      ? Math.max(100000, 350000 - index * 80000)
+      : Math.max(150000, 450000 - index * 100000),
   }));
 
   return attempts;
@@ -137,7 +151,7 @@ const buildVideoTooLargeMessage = sizeBytes => {
     `कृपया ${maxMB} MB से छोटा वीडियो अपलोड करें ताकि उसे सुरक्षित रूप से compress करके submit किया जा सके।`
   );
 };
-const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
+const compressVideoForUpload = async (videoUri, sourceInfo = {}, cancelRef = null) => {
   try {
     let safeUri = videoUri;
     const sourceDetails = getVideoSourceInfo(sourceInfo);
@@ -171,28 +185,80 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
       };
     }
 
-    if (sourceDetails.fileSizeBytes > 100 * 1024 * 1024) {
+    const checkCancelled = () => {
+      if (cancelRef && cancelRef.current === true) {
+        throw new Error('CANCELLED');
+      }
+    };
+
+    // 1) Try AUTO mode first — fastest, library picks optimal settings
+    try {
+      checkCancelled();
+      const autoUri = await withTimeout(
+        VideoCompressor.compress(safeUri, {
+          compressionMethod: 'auto',
+          minimumFileSizeForCompress: 0,
+          getCancellationId: id => {
+            if (cancelRef) {
+              cancelRef.activeId = id;
+            }
+          },
+        }),
+        30000,
+        'Auto compression',
+      );
+
+      if (autoUri) {
+        const autoSize = await getFileSizeBytes(autoUri);
+        const autoOk =
+          autoSize > 0 &&
+          autoUri !== safeUri &&
+          autoSize <= TARGET_VIDEO_MAX_BYTES;
+
+        if (autoOk) {
+          return {
+            uri: autoUri,
+            sizeBytes: autoSize,
+            wasCompressed: true,
+            method: 'Auto',
+          };
+        }
+      }
+    } catch (e) {
+      if (e?.message === 'CANCELLED') {
+        throw e;
+      }
+      // Auto failed or timed out — fall through to manual fallback
     }
 
+    // 2) Manual fallback — only if auto didn't produce a small enough file
     const attempts = compressionAttempts(sourceDetails);
     let lastError = null;
 
     for (const attempt of attempts) {
       try {
-
-        const compressedUri = await VideoCompressor.compress(safeUri, {
-          compressionMethod: 'manual',
-          maxSize: attempt.maxSize,
-          bitrate: attempt.bitrate,
-          minimumFileSizeForCompress: 0,
-        });
+        checkCancelled();
+        const compressedUri = await withTimeout(
+          VideoCompressor.compress(safeUri, {
+            compressionMethod: 'manual',
+            maxSize: attempt.maxSize,
+            bitrate: attempt.bitrate,
+            minimumFileSizeForCompress: 0,
+            getCancellationId: id => {
+              if (cancelRef) {
+                cancelRef.activeId = id;
+              }
+            },
+          }),
+          60000,
+          `Manual compression ${attempt.maxSize}p`,
+        );
 
         if (!compressedUri) {
           throw new Error('Compression ने कोई file return नहीं की।');
         }
 
         const finalSizeBytes = await getFileSizeBytes(compressedUri);
-
         const didShrink =
           compressedUri !== safeUri &&
           finalSizeBytes > 0 &&
@@ -202,13 +268,17 @@ const compressVideoForUpload = async (videoUri, sourceInfo = {}) => {
           throw new Error('Compression के बाद file size कम नहीं हुई।');
         }
 
+        // Accept first successful shrink — don't keep trying smaller sizes
         return {
           uri: compressedUri,
           sizeBytes: finalSizeBytes,
           wasCompressed: true,
-          method: `Aggressive-Manual-${attempt.maxSize}`,
+          method: `Manual-${attempt.maxSize}`,
         };
       } catch (error) {
+        if (error?.message === 'CANCELLED') {
+          throw error;
+        }
         lastError = error;
       }
     }
@@ -373,17 +443,17 @@ const isCatalogTaskVisible = catalogTask => {
 
   const deleteState = normalizeTaskStateValue(
     catalogTask.isDeleted ??
-      catalogTask.IsDeleted ??
-      catalogTask.isDelete ??
-      catalogTask.IsDelete ??
-      catalogTask.deleted ??
-      catalogTask.Deleted ??
-      catalogTask.deletedFlag ??
-      catalogTask.DeletedFlag ??
-      catalogTask.removeFlag ??
-      catalogTask.RemoveFlag ??
-      catalogTask.removed ??
-      catalogTask.Removed,
+    catalogTask.IsDeleted ??
+    catalogTask.isDelete ??
+    catalogTask.IsDelete ??
+    catalogTask.deleted ??
+    catalogTask.Deleted ??
+    catalogTask.deletedFlag ??
+    catalogTask.DeletedFlag ??
+    catalogTask.removeFlag ??
+    catalogTask.RemoveFlag ??
+    catalogTask.removed ??
+    catalogTask.Removed,
   );
 
   if (deleteState && hasTruthyTaskState(deleteState)) {
@@ -392,21 +462,21 @@ const isCatalogTaskVisible = catalogTask => {
 
   const statusState = normalizeTaskStateValue(
     catalogTask.state ??
-      catalogTask.State ??
-      catalogTask.status ??
-      catalogTask.Status ??
-      catalogTask.taskStatus ??
-      catalogTask.TaskStatus ??
-      catalogTask.recordStatus ??
-      catalogTask.RecordStatus ??
-      catalogTask.active ??
-      catalogTask.Active ??
-      catalogTask.isActive ??
-      catalogTask.IsActive ??
-      catalogTask.enabled ??
-      catalogTask.Enabled ??
-      catalogTask.visible ??
-      catalogTask.Visible,
+    catalogTask.State ??
+    catalogTask.status ??
+    catalogTask.Status ??
+    catalogTask.taskStatus ??
+    catalogTask.TaskStatus ??
+    catalogTask.recordStatus ??
+    catalogTask.RecordStatus ??
+    catalogTask.active ??
+    catalogTask.Active ??
+    catalogTask.isActive ??
+    catalogTask.IsActive ??
+    catalogTask.enabled ??
+    catalogTask.Enabled ??
+    catalogTask.visible ??
+    catalogTask.Visible,
   );
 
   if (!statusState) {
@@ -427,12 +497,12 @@ const isTaskOptionVisible = (task, catalog = null) => {
 
   const taskId = String(
     task.taskId ||
-      task.TaskId ||
-      task.taskKey ||
-      task.TaskKey ||
-      task.id ||
-      task.key ||
-      '',
+    task.TaskId ||
+    task.taskKey ||
+    task.TaskKey ||
+    task.id ||
+    task.key ||
+    '',
   ).trim();
 
   const catalogTask = resolveCatalogTaskRecord(
@@ -464,10 +534,6 @@ const TaskActionModal = ({
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
-  const [savingMessage, setSavingMessage] = useState('Saving task...');
-  const [savingSubMessage, setSavingSubMessage] = useState(
-    'Please wait while the task is being submitted.',
-  );
   const [ward, setWard] = useState('');
   const [participants, setParticipants] = useState('');
   const [maleCount, setMaleCount] = useState('');
@@ -489,7 +555,9 @@ const TaskActionModal = ({
   const [isCameraVisible, setIsCameraVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
   const [isCompressing, setIsCompressing] = useState(false);
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
   const [infoModalVisible, setInfoModalVisible] = useState(false);
+  const videoCancelRef = useRef({ current: false, activeId: null });
 
   const slideAnim = useRef(new Animated.Value(Dimensions.get('window').width)).current;
   const infoSlideAnim = useRef(new Animated.Value(Dimensions.get('window').width)).current;
@@ -554,25 +622,25 @@ const TaskActionModal = ({
   useEffect(() => {
     let isActive = true;
 
-     const loadTaskCatalog = async () => {
-       if (!visible) {
-         if (isActive) {
-           setTaskCatalog(null);
-         }
-         return;
-       }
+    const loadTaskCatalog = async () => {
+      if (!visible) {
+        if (isActive) {
+          setTaskCatalog(null);
+        }
+        return;
+      }
 
-       try {
-         const catalog = await getTaskCatalog();
-         if (isActive) {
-           setTaskCatalog(catalog && typeof catalog === 'object' ? catalog : null);
-         }
-       } catch (error) {
-         if (isActive) {
-           setTaskCatalog(null);
-         }
-       }
-     };
+      try {
+        const catalog = await getTaskCatalog();
+        if (isActive) {
+          setTaskCatalog(catalog && typeof catalog === 'object' ? catalog : null);
+        }
+      } catch (error) {
+        if (isActive) {
+          setTaskCatalog(null);
+        }
+      }
+    };
 
     loadTaskCatalog();
 
@@ -711,71 +779,71 @@ const TaskActionModal = ({
     const visibilityCatalog = taskCatalog || null;
     return dedupeTaskOptions(
       (Array.isArray(taskChoices) ? taskChoices : [])
-      .map((item, index) => {
-        if (!item) {
-          return null;
-        }
+        .map((item, index) => {
+          if (!item) {
+            return null;
+          }
 
-        const title = String(
-          item.title ||
-          item.name ||
-          item.taskName ||
-          item.TaskName ||
-          item.label ||
-          '',
-        ).trim();
-        const id = String(
-          item.id || item.key || item.taskId || item.TaskId || index,
-        ).trim();
-
-        if (!title) {
-          return null;
-        }
-
-        return {
-          id: id || `${index}`,
-          title,
-          taskId: String(
-            item.taskId || item.TaskId || item.id || item.key || '',
-          ).trim(),
-          taskCategory: String(
-            item.taskCategory || item.TaskCategory || item.category || '',
-          ).trim(),
-          sourceLabel: String(
-            item.sourceLabel || item.sourceType || item.taskSourceLabel || '',
-          ).trim(),
-          sourceKey: String(
-            item.sourceKey || item.taskSourceKey || item.source_key || '',
-          ).trim(),
-          priority: String(
-            item.priority || item.taskPriority || item.TaskPriority || '',
-          ).trim(),
-          description: String(
-            item.description ||
-            item.Description ||
-            item.desc ||
-            item.Desc ||
-            item.details ||
-            item.Details ||
-            item.remarks ||
-            item.Remarks ||
-            item.remark ||
-            item.Remark ||
-            item.taskDesc ||
-            item.TaskDesc ||
-            item.TaskDetails ||
+          const title = String(
+            item.title ||
+            item.name ||
+            item.taskName ||
+            item.TaskName ||
+            item.label ||
             '',
-          ).trim(),
-          type: String(
-            item.type || item.taskType || item.TaskType || '',
-          ).trim(),
-          originalPath: item.originalPath || null,
-          catalogTask: item.catalogTask || null,
-          raw: item.raw || item,
-        };
-      })
-      .filter(Boolean)
-      .filter(item => isTaskOptionVisible(item, visibilityCatalog)),
+          ).trim();
+          const id = String(
+            item.id || item.key || item.taskId || item.TaskId || index,
+          ).trim();
+
+          if (!title) {
+            return null;
+          }
+
+          return {
+            id: id || `${index}`,
+            title,
+            taskId: String(
+              item.taskId || item.TaskId || item.id || item.key || '',
+            ).trim(),
+            taskCategory: String(
+              item.taskCategory || item.TaskCategory || item.category || '',
+            ).trim(),
+            sourceLabel: String(
+              item.sourceLabel || item.sourceType || item.taskSourceLabel || '',
+            ).trim(),
+            sourceKey: String(
+              item.sourceKey || item.taskSourceKey || item.source_key || '',
+            ).trim(),
+            priority: String(
+              item.priority || item.taskPriority || item.TaskPriority || '',
+            ).trim(),
+            description: String(
+              item.description ||
+              item.Description ||
+              item.desc ||
+              item.Desc ||
+              item.details ||
+              item.Details ||
+              item.remarks ||
+              item.Remarks ||
+              item.remark ||
+              item.Remark ||
+              item.taskDesc ||
+              item.TaskDesc ||
+              item.TaskDetails ||
+              '',
+            ).trim(),
+            type: String(
+              item.type || item.taskType || item.TaskType || '',
+            ).trim(),
+            originalPath: item.originalPath || null,
+            catalogTask: item.catalogTask || null,
+            raw: item.raw || item,
+          };
+        })
+        .filter(Boolean)
+        .filter(item => isTaskOptionVisible(item, visibilityCatalog)),
     );
   }, [taskCatalog, taskChoices]);
 
@@ -783,71 +851,71 @@ const TaskActionModal = ({
     const visibilityCatalog = taskCatalog || null;
     return dedupeTaskOptions(
       (Array.isArray(taskOptions) ? taskOptions : [])
-      .map((item, index) => {
-        if (!item) {
-          return null;
-        }
+        .map((item, index) => {
+          if (!item) {
+            return null;
+          }
 
-        const title = String(
-          item.title ||
-          item.name ||
-          item.taskName ||
-          item.TaskName ||
-          item.label ||
-          '',
-        ).trim();
-        const id = String(
-          item.id || item.key || item.taskId || item.TaskId || index,
-        ).trim();
-
-        if (!title) {
-          return null;
-        }
-
-        return {
-          id: id || `${index}`,
-          title,
-          taskId: String(
-            item.taskId || item.TaskId || item.id || item.key || '',
-          ).trim(),
-          taskCategory: String(
-            item.taskCategory || item.TaskCategory || item.category || '',
-          ).trim(),
-          sourceLabel: String(
-            item.sourceLabel || item.sourceType || item.taskSourceLabel || '',
-          ).trim(),
-          sourceKey: String(
-            item.sourceKey || item.taskSourceKey || item.source_key || '',
-          ).trim(),
-          description: String(
-            item.description ||
-            item.Description ||
-            item.desc ||
-            item.Desc ||
-            item.details ||
-            item.Details ||
-            item.remarks ||
-            item.Remarks ||
-            item.remark ||
-            item.Remark ||
-            item.taskDesc ||
-            item.TaskDesc ||
-            item.TaskDetails ||
+          const title = String(
+            item.title ||
+            item.name ||
+            item.taskName ||
+            item.TaskName ||
+            item.label ||
             '',
-          ).trim(),
-          type: String(
-            item.type || item.taskType || item.TaskType || '',
-          ).trim(),
-          priority: String(
-            item.priority || item.taskPriority || item.TaskPriority || '',
-          ).trim(),
-          originalPath: item.originalPath || null,
-          catalogTask: item.catalogTask || null,
-          raw: item.raw || item,
-        };
-      })
-      .filter(Boolean)
-      .filter(item => isTaskOptionVisible(item, visibilityCatalog)),
+          ).trim();
+          const id = String(
+            item.id || item.key || item.taskId || item.TaskId || index,
+          ).trim();
+
+          if (!title) {
+            return null;
+          }
+
+          return {
+            id: id || `${index}`,
+            title,
+            taskId: String(
+              item.taskId || item.TaskId || item.id || item.key || '',
+            ).trim(),
+            taskCategory: String(
+              item.taskCategory || item.TaskCategory || item.category || '',
+            ).trim(),
+            sourceLabel: String(
+              item.sourceLabel || item.sourceType || item.taskSourceLabel || '',
+            ).trim(),
+            sourceKey: String(
+              item.sourceKey || item.taskSourceKey || item.source_key || '',
+            ).trim(),
+            description: String(
+              item.description ||
+              item.Description ||
+              item.desc ||
+              item.Desc ||
+              item.details ||
+              item.Details ||
+              item.remarks ||
+              item.Remarks ||
+              item.remark ||
+              item.Remark ||
+              item.taskDesc ||
+              item.TaskDesc ||
+              item.TaskDetails ||
+              '',
+            ).trim(),
+            type: String(
+              item.type || item.taskType || item.TaskType || '',
+            ).trim(),
+            priority: String(
+              item.priority || item.taskPriority || item.TaskPriority || '',
+            ).trim(),
+            originalPath: item.originalPath || null,
+            catalogTask: item.catalogTask || null,
+            raw: item.raw || item,
+          };
+        })
+        .filter(Boolean)
+        .filter(item => isTaskOptionVisible(item, visibilityCatalog)),
     );
   }, [taskCatalog, taskOptions]);
 
@@ -1162,16 +1230,16 @@ const TaskActionModal = ({
       return dedupeTaskOptions(choices);
     }
 
-     if (mode === 'add_other') {
-       const payload = await getTaskCatalog();
-       const choices = [];
+    if (mode === 'add_other') {
+      const payload = await getTaskCatalog();
+      const choices = [];
 
-       collectOtherTaskChoices(choices, payload);
+      collectOtherTaskChoices(choices, payload);
 
-       return dedupeTaskOptions(choices).filter(item =>
-         isTaskOptionVisible(item, payload),
-       );
-     }
+      return dedupeTaskOptions(choices).filter(item =>
+        isTaskOptionVisible(item, payload),
+      );
+    }
 
     return [];
   }, [mode]);
@@ -1435,8 +1503,6 @@ const TaskActionModal = ({
       return;
     }
 
-    setSavingMessage('Saving task...');
-    setSavingSubMessage('Please wait while the task is being submitted.');
     setIsSaving(true);
     let capturedLocation = {
       latitude: 0,
@@ -1499,7 +1565,7 @@ const TaskActionModal = ({
       delete taskWithoutOriginalPath.originalPath;
       delete taskWithoutOriginalPath.raw;
 
-      const saveResult = await saveTaskSubmission({
+      await saveTaskSubmission({
         mode,
         selectedTask: {
           ...taskWithoutOriginalPath,
@@ -1532,59 +1598,8 @@ const TaskActionModal = ({
         location: capturedLocation,
       });
 
-      // Wait for current task's media uploads to complete (with timeout)
-      const ourPaths = Array.isArray(saveResult?.uploadStoragePaths)
-        ? saveResult.uploadStoragePaths
-        : [];
-      const totalMedia = ourPaths.length;
-      if (totalMedia > 0) {
-        const UPLOAD_WAIT_TIMEOUT_MS = 20000;
-        const POLL_INTERVAL_MS = 800;
-        const startedAt = Date.now();
-        let lastPending = totalMedia;
-
-        setSavingMessage(`Uploading media (0/${totalMedia})...`);
-        setSavingSubMessage('Please keep the app open.');
-
-        while (Date.now() - startedAt < UPLOAD_WAIT_TIMEOUT_MS) {
-          let queue = [];
-          try {
-            queue = await getPendingMediaUploads();
-          } catch {
-            break;
-          }
-          const pendingOurs = queue.filter(it =>
-            ourPaths.includes(String(it?.storagePath || '')),
-          ).length;
-          const done = totalMedia - pendingOurs;
-          if (pendingOurs !== lastPending) {
-            lastPending = pendingOurs;
-            setSavingMessage(`Uploading media (${done}/${totalMedia})...`);
-          }
-          if (pendingOurs === 0) {
-            break;
-          }
-          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-        }
-      }
-
       setFieldErrors({});
-      // Final message based on remaining pending
-      let finalToast = 'Task details have been submitted.';
-      if (totalMedia > 0) {
-        try {
-          const queue = await getPendingMediaUploads();
-          const stillPending = queue.filter(it =>
-            ourPaths.includes(String(it?.storagePath || '')),
-          ).length;
-          if (stillPending > 0) {
-            finalToast = `Task submitted. ${stillPending} file(s) uploading in background.`;
-          }
-        } catch {
-          // Ignore
-        }
-      }
-      showToast(finalToast, 'success');
+      showToast('Task submitted.', 'success');
       onSaved?.();
       onClose();
     } catch (error) {
@@ -1599,25 +1614,36 @@ const TaskActionModal = ({
   };
 
   const captureImage = () => {
-    if (images.length >= 5) {
-      showInlineToast('You can only attach up to 5 images.', 'warning');
+    if (images.length >= MAX_IMAGES) {
+      showInlineToast(
+        `You can only attach up to ${MAX_IMAGES} images.`,
+        'warning',
+      );
       return;
     }
+    Keyboard.dismiss();
+    setIsProcessingImage(true);
     setIsCameraVisible(true);
   };
 
   const onPictureTaken = uri => {
     setImages(prev => [...prev, uri]);
     setFieldErrors(prev => ({ ...prev, images: false }));
+    setIsProcessingImage(false);
   };
 
   const pickImageFromGallery = async () => {
-    if (images.length >= 5) {
-      showInlineToast('You can only attach up to 5 images.', 'warning');
+    if (images.length >= MAX_IMAGES) {
+      showInlineToast(
+        `You can only attach up to ${MAX_IMAGES} images.`,
+        'warning',
+      );
       return;
     }
+    Keyboard.dismiss();
+    setIsProcessingImage(true);
     try {
-      const remainingSlots = 5 - images.length;
+      const remainingSlots = MAX_IMAGES - images.length;
       beginAppStateSuppression(8000);
       const result = await launchImageLibrary({
         mediaType: 'photo',
@@ -1638,14 +1664,29 @@ const TaskActionModal = ({
         return;
       }
 
-      setImages(prev => [...prev, ...pickedUris].slice(0, 5));
+      setImages(prev => [...prev, ...pickedUris].slice(0, MAX_IMAGES));
       setFieldErrors(prev => ({ ...prev, images: false }));
     } catch (err) {
       showAlert({
         title: 'Image Upload Error',
         message: err?.message || 'Image upload नहीं हो पाया। कृपया दोबारा कोशिश करें।',
       });
+    } finally {
+      setIsProcessingImage(false);
     }
+  };
+
+  const cancelVideoCompression = () => {
+    videoCancelRef.current.current = true;
+    const id = videoCancelRef.current.activeId;
+    if (id) {
+      try {
+        VideoCompressor.cancelCompression(id);
+      } catch (_e) {
+        // Ignore
+      }
+    }
+    setIsCompressing(false);
   };
 
   const captureVideo = async () => {
@@ -1653,9 +1694,11 @@ const TaskActionModal = ({
       showInlineToast('आप केवल 2 वीडियो तक जोड़ सकते हैं।', 'warning');
       return;
     }
+    Keyboard.dismiss();
+    videoCancelRef.current = { current: false, activeId: null };
     setIsCompressing(true);
     try {
-      beginAppStateSuppression(12000);
+      beginAppStateSuppression(60000);
       const result = await launchImageLibrary({
         mediaType: 'video',
         videoQuality: 'high',
@@ -1669,12 +1712,16 @@ const TaskActionModal = ({
 
       const activeVideoAsset = result.assets[0] || {};
       const videoUri = activeVideoAsset.uri;
-      const compressedVideo = await compressVideoForUpload(videoUri, {
-        fileSize: activeVideoAsset.fileSize,
-        duration: activeVideoAsset.duration,
-        width: activeVideoAsset.width,
-        height: activeVideoAsset.height,
-      });
+      const compressedVideo = await compressVideoForUpload(
+        videoUri,
+        {
+          fileSize: activeVideoAsset.fileSize,
+          duration: activeVideoAsset.duration,
+          width: activeVideoAsset.width,
+          height: activeVideoAsset.height,
+        },
+        videoCancelRef.current,
+      );
       const finalVideoUri = compressedVideo.uri;
       if (!finalVideoUri) {
         throw new Error(
@@ -1696,10 +1743,14 @@ const TaskActionModal = ({
         { uri: finalVideoUri, thumbnailUri, sizeBytes: finalVideoSizeBytes },
       ]);
     } catch (err) {
-      showAlert({
-        title: 'Video Upload Error',
-        message: err?.message || 'वीडियो process नहीं हो पाया। कृपया दोबारा कोशिश करें।',
-      });
+      if (err?.message !== 'CANCELLED') {
+        showAlert({
+          title: 'Video Upload Error',
+          message:
+            err?.message ||
+            'वीडियो process नहीं हो पाया। कृपया दोबारा कोशिश करें।',
+        });
+      }
     } finally {
       setIsCompressing(false);
     }
@@ -1733,13 +1784,16 @@ const TaskActionModal = ({
     <>
       <ReusableCamera
         visible={isCameraVisible}
-        onClose={() => setIsCameraVisible(false)}
+        onClose={() => {
+          setIsCameraVisible(false);
+          setIsProcessingImage(false);
+        }}
         onPictureTaken={onPictureTaken}
       />
       <CommonLoader
         visible={isSaving}
-        message={savingMessage}
-        subMessage={savingSubMessage}
+        message="Saving task..."
+        subMessage="Please wait while the task is being submitted."
       />
       <Modal
         visible={visible}
@@ -1891,7 +1945,7 @@ const TaskActionModal = ({
                               style={[
                                 styles.taskPickerValue,
                                 !selectedTaskParam &&
-                                  styles.taskPickerPlaceholder,
+                                styles.taskPickerPlaceholder,
                               ]}
                               numberOfLines={1}
                               ellipsizeMode="tail"
@@ -1960,7 +2014,7 @@ const TaskActionModal = ({
                           style={[
                             styles.iconInput,
                             fieldErrors.participants &&
-                              styles.iconInputError,
+                            styles.iconInputError,
                           ]}
                         >
                           <MaterialCommunityIcons
@@ -1989,171 +2043,171 @@ const TaskActionModal = ({
 
                   {/* Section 03 — Participant Details (only when total > 0) */}
                   {showParticipantDetails ? (
-                  <View style={styles.section}>
-                    <View style={styles.sectionHead}>
-                      <View style={styles.sectionBadge}>
-                        <Text style={styles.sectionBadgeText}>03</Text>
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.sectionTitle}>
-                          Participant Details
-                        </Text>
-                        <Text style={styles.sectionSubtitle}>
-                          Count must match total participants
-                        </Text>
-                      </View>
-                    </View>
-
-                    <Text style={styles.subHead}>Gender</Text>
-                    <View style={styles.tileRow}>
-                      {[
-                        {
-                          label: 'Male',
-                          value: maleCount,
-                          setter: setMaleCount,
-                          errKey: 'maleCount',
-                          icon: 'gender-male',
-                          color: '#3B82F6',
-                        },
-                        {
-                          label: 'Female',
-                          value: femaleCount,
-                          setter: setFemaleCount,
-                          errKey: 'femaleCount',
-                          icon: 'gender-female',
-                          color: '#EC4899',
-                        },
-                        {
-                          label: 'Other',
-                          value: otherCount,
-                          setter: setOtherCount,
-                          errKey: 'otherCount',
-                          icon: 'gender-non-binary',
-                          color: '#8B5CF6',
-                        },
-                      ].map(item => (
-                        <View key={item.errKey} style={styles.genderTile}>
-                          <View
-                            style={[
-                              styles.genderTileIcon,
-                              { backgroundColor: `${item.color}1A` },
-                            ]}
-                          >
-                            <MaterialCommunityIcons
-                              name={item.icon}
-                              size={18}
-                              color={item.color}
-                            />
-                          </View>
-                          <Text style={styles.genderTileLabel}>
-                            {item.label}
+                    <View style={styles.section}>
+                      <View style={styles.sectionHead}>
+                        <View style={styles.sectionBadge}>
+                          <Text style={styles.sectionBadgeText}>03</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.sectionTitle}>
+                            Participant Details
                           </Text>
-                          <TextInput
-                            style={[
-                              styles.genderTileInput,
-                              fieldErrors[item.errKey] &&
-                                styles.genderTileInputError,
-                            ]}
-                            value={item.value ? String(item.value) : ''}
-                            onChangeText={txt =>
-                              updateField(
-                                item.setter,
-                                item.errKey,
-                              )(String(txt).replace(/[^0-9]/g, ''))
-                            }
-                            placeholder="0"
-                            placeholderTextColor="#CBD5E1"
-                            keyboardType="numeric"
-                            editable={!isSaving}
-                            selectTextOnFocus
-                          />
+                          <Text style={styles.sectionSubtitle}>
+                            Count must match total participants
+                          </Text>
                         </View>
-                      ))}
-                    </View>
+                      </View>
 
-                    <Text style={[styles.subHead, { marginTop: 18 }]}>
-                      Age Group
-                    </Text>
-                    <View style={styles.ageList}>
-                      {[
-                        {
-                          label: 'Below 18',
-                          value: ageBelow18,
-                          setter: setAgeBelow18,
-                          errKey: 'ageBelow18',
-                          icon: 'baby-face-outline',
-                          color: '#10B981',
-                        },
-                        {
-                          label: '18 – 30',
-                          value: age18to30,
-                          setter: setAge18to30,
-                          errKey: 'age18to30',
-                          icon: 'account-outline',
-                          color: '#0EA5E9',
-                        },
-                        {
-                          label: '31 – 45',
-                          value: age31to45,
-                          setter: setAge31to45,
-                          errKey: 'age31to45',
-                          icon: 'account-tie-outline',
-                          color: '#F59E0B',
-                        },
-                        {
-                          label: '46 – 60',
-                          value: age46to60,
-                          setter: setAge46to60,
-                          errKey: 'age46to60',
-                          icon: 'account-clock-outline',
-                          color: '#EF4444',
-                        },
-                        {
-                          label: 'Above 60',
-                          value: ageAbove60,
-                          setter: setAgeAbove60,
-                          errKey: 'ageAbove60',
-                          icon: 'human-cane',
-                          color: '#6366F1',
-                        },
-                      ].map(item => (
-                        <View key={item.errKey} style={styles.ageRow}>
-                          <View
-                            style={[
-                              styles.ageRowIcon,
-                              { backgroundColor: `${item.color}1A` },
-                            ]}
-                          >
-                            <MaterialCommunityIcons
-                              name={item.icon}
-                              size={16}
-                              color={item.color}
+                      <Text style={styles.subHead}>Gender</Text>
+                      <View style={styles.tileRow}>
+                        {[
+                          {
+                            label: 'Male',
+                            value: maleCount,
+                            setter: setMaleCount,
+                            errKey: 'maleCount',
+                            icon: 'gender-male',
+                            color: '#3B82F6',
+                          },
+                          {
+                            label: 'Female',
+                            value: femaleCount,
+                            setter: setFemaleCount,
+                            errKey: 'femaleCount',
+                            icon: 'gender-female',
+                            color: '#EC4899',
+                          },
+                          {
+                            label: 'Other',
+                            value: otherCount,
+                            setter: setOtherCount,
+                            errKey: 'otherCount',
+                            icon: 'gender-non-binary',
+                            color: '#8B5CF6',
+                          },
+                        ].map(item => (
+                          <View key={item.errKey} style={styles.genderTile}>
+                            <View
+                              style={[
+                                styles.genderTileIcon,
+                                { backgroundColor: `${item.color}1A` },
+                              ]}
+                            >
+                              <MaterialCommunityIcons
+                                name={item.icon}
+                                size={18}
+                                color={item.color}
+                              />
+                            </View>
+                            <Text style={styles.genderTileLabel}>
+                              {item.label}
+                            </Text>
+                            <TextInput
+                              style={[
+                                styles.genderTileInput,
+                                fieldErrors[item.errKey] &&
+                                styles.genderTileInputError,
+                              ]}
+                              value={item.value ? String(item.value) : ''}
+                              onChangeText={txt =>
+                                updateField(
+                                  item.setter,
+                                  item.errKey,
+                                )(String(txt).replace(/[^0-9]/g, ''))
+                              }
+                              placeholder="0"
+                              placeholderTextColor="#CBD5E1"
+                              keyboardType="numeric"
+                              editable={!isSaving}
+                              selectTextOnFocus
                             />
                           </View>
-                          <Text style={styles.ageRowLabel}>{item.label}</Text>
-                          <TextInput
-                            style={[
-                              styles.ageRowInput,
-                              fieldErrors[item.errKey] &&
+                        ))}
+                      </View>
+
+                      <Text style={[styles.subHead, { marginTop: 18 }]}>
+                        Age Group
+                      </Text>
+                      <View style={styles.ageList}>
+                        {[
+                          {
+                            label: 'Below 18',
+                            value: ageBelow18,
+                            setter: setAgeBelow18,
+                            errKey: 'ageBelow18',
+                            icon: 'baby-face-outline',
+                            color: '#10B981',
+                          },
+                          {
+                            label: '18 – 30',
+                            value: age18to30,
+                            setter: setAge18to30,
+                            errKey: 'age18to30',
+                            icon: 'account-outline',
+                            color: '#0EA5E9',
+                          },
+                          {
+                            label: '31 – 45',
+                            value: age31to45,
+                            setter: setAge31to45,
+                            errKey: 'age31to45',
+                            icon: 'account-tie-outline',
+                            color: '#F59E0B',
+                          },
+                          {
+                            label: '46 – 60',
+                            value: age46to60,
+                            setter: setAge46to60,
+                            errKey: 'age46to60',
+                            icon: 'account-clock-outline',
+                            color: '#EF4444',
+                          },
+                          {
+                            label: 'Above 60',
+                            value: ageAbove60,
+                            setter: setAgeAbove60,
+                            errKey: 'ageAbove60',
+                            icon: 'human-cane',
+                            color: '#6366F1',
+                          },
+                        ].map(item => (
+                          <View key={item.errKey} style={styles.ageRow}>
+                            <View
+                              style={[
+                                styles.ageRowIcon,
+                                { backgroundColor: `${item.color}1A` },
+                              ]}
+                            >
+                              <MaterialCommunityIcons
+                                name={item.icon}
+                                size={16}
+                                color={item.color}
+                              />
+                            </View>
+                            <Text style={styles.ageRowLabel}>{item.label}</Text>
+                            <TextInput
+                              style={[
+                                styles.ageRowInput,
+                                fieldErrors[item.errKey] &&
                                 styles.ageRowInputError,
-                            ]}
-                            value={item.value ? String(item.value) : ''}
-                            onChangeText={txt =>
-                              updateField(
-                                item.setter,
-                                item.errKey,
-                              )(String(txt).replace(/[^0-9]/g, ''))
-                            }
-                            placeholder="0"
-                            placeholderTextColor="#CBD5E1"
-                            keyboardType="numeric"
-                            editable={!isSaving}
-                            selectTextOnFocus
-                          />
-                        </View>
-                      ))}
+                              ]}
+                              value={item.value ? String(item.value) : ''}
+                              onChangeText={txt =>
+                                updateField(
+                                  item.setter,
+                                  item.errKey,
+                                )(String(txt).replace(/[^0-9]/g, ''))
+                              }
+                              placeholder="0"
+                              placeholderTextColor="#CBD5E1"
+                              keyboardType="numeric"
+                              editable={!isSaving}
+                              selectTextOnFocus
+                            />
+                          </View>
+                        ))}
+                      </View>
                     </View>
-                  </View>
                   ) : null}
 
                   {/* Section 04 — Photos & Video */}
@@ -2182,7 +2236,7 @@ const TaskActionModal = ({
                         </Text>
                         <View style={styles.mediaPill}>
                           <Text style={styles.mediaPillText}>
-                            {images.length} of 5
+                            {images.length} of {MAX_IMAGES}
                           </Text>
                         </View>
                       </View>
@@ -2192,7 +2246,23 @@ const TaskActionModal = ({
                         </Text>
                       ) : null}
                       <View style={styles.mediaGrid}>
-                        {images.length < 5 && (
+                        {isProcessingImage ? (
+                          <View
+                            style={[
+                              styles.previewCard,
+                              styles.compressingCard,
+                            ]}
+                          >
+                            <ActivityIndicator
+                              size="small"
+                              color={appTheme.colors.brand.primary}
+                            />
+                            <Text style={styles.compressingText}>
+                              Loading...
+                            </Text>
+                          </View>
+                        ) : null}
+                        {!isProcessingImage && images.length < MAX_IMAGES && (
                           <TouchableOpacity
                             style={[
                               styles.previewCard,
@@ -2209,7 +2279,7 @@ const TaskActionModal = ({
                             <Text style={styles.uploadSmallText}>Capture</Text>
                           </TouchableOpacity>
                         )}
-                        {images.length < 5 && (
+                        {!isProcessingImage && images.length < MAX_IMAGES && (
                           <TouchableOpacity
                             style={[
                               styles.previewCard,
@@ -2282,12 +2352,21 @@ const TaskActionModal = ({
                             ]}
                           >
                             <ActivityIndicator
-                              size="large"
+                              size="small"
                               color={appTheme.colors.brand.primary}
                             />
                             <Text style={styles.compressingText}>
                               Compressing...
                             </Text>
+                            <TouchableOpacity
+                              style={styles.compressingCancelBtn}
+                              onPress={cancelVideoCompression}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={styles.compressingCancelText}>
+                                Cancel
+                              </Text>
+                            </TouchableOpacity>
                           </View>
                         ) : (
                           videos.length < 2 && (
@@ -2357,7 +2436,7 @@ const TaskActionModal = ({
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.sectionTitle}>
-                          Remark <Text style={styles.reqStar}>*</Text>
+                          Topics covered <Text style={styles.reqStar}>*</Text>
                         </Text>
                         <Text style={styles.sectionSubtitle}>
                           Briefly describe about the activity
@@ -3176,11 +3255,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   previewCard: {
-    width: 84,
-    height: 84,
-    borderRadius: 12,
-    marginRight: 10,
-    marginBottom: 10,
+    width: 60,
+    height: 60,
+    borderRadius: 10,
+    marginRight: 8,
+    marginBottom: 8,
     backgroundColor: '#FFF',
     borderWidth: 1,
     borderColor: '#E5E7EB',
@@ -3220,11 +3299,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   compressingCard: {
-    width: 84,
-    height: 84,
-    borderRadius: 12,
-    marginRight: 10,
-    marginBottom: 10,
+    width: 70,
+    height: 70,
+    borderRadius: 10,
+    marginRight: 8,
+    marginBottom: 8,
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderStyle: 'dashed',
@@ -3233,10 +3312,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   compressingText: {
-    fontSize: 10,
-    fontWeight: '600',
+    fontSize: 9,
+    fontWeight: '700',
     color: appTheme.colors.brand.primary,
+    marginTop: 3,
+  },
+  compressingCancelBtn: {
     marginTop: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(180, 35, 24, 0.10)',
+  },
+  compressingCancelText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: appTheme.colors.status.danger,
+    letterSpacing: 0.2,
   },
   removeMediaBtn: {
     position: 'absolute',

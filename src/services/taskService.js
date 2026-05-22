@@ -376,12 +376,12 @@ export const saveTaskSubmission = async ({
   });
 
 
-  const { getDatabase, ref } = require('@react-native-firebase/database');
+  const { getDatabase, ref, runTransaction } = require('@react-native-firebase/database');
   const app = await initializeFirebaseApp();
   const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
   const taskBucketRef = ref(db, taskRootPath);
 
-  const transactionResult = await taskBucketRef.transaction(current => {
+  const transactionResult = await runTransaction(taskBucketRef, current => {
     const currentBucket = sanitizeTaskBucket(current);
     const nextCount = getNextNumericChildKey(currentBucket);
     return {
@@ -447,12 +447,15 @@ export const saveTaskSubmission = async ({
     return `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${userId}/${year}/${month}/${currentDate}/${taskKey}/${nextTaskCount}/${videoFileName}`;
   });
 
+  const taskRef = `${taskRootPath}/${nextTaskCount}`;
+
   await Promise.all(
     normalizedImages.map(async (image, index) => {
       await enqueuePendingMediaUpload({
         localPath: image.uri,
         storagePath: imageStoragePaths[index],
         contentType: 'image/jpeg',
+        taskRef,
       });
     }),
   );
@@ -463,6 +466,7 @@ export const saveTaskSubmission = async ({
         localPath: video.uri,
         storagePath: videoStoragePaths[index],
         contentType: 'video/mp4',
+        taskRef,
       });
     }),
   );
@@ -471,6 +475,7 @@ export const saveTaskSubmission = async ({
 
   return {
     ok: true,
+    taskRef,
     uploadStoragePaths: [...imageStoragePaths, ...videoStoragePaths],
   };
 };

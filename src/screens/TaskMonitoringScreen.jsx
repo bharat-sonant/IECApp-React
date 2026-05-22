@@ -1,8 +1,11 @@
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import {
+  Animated,
+  Dimensions,
   FlatList,
   Modal,
   Pressable,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -136,6 +139,32 @@ const TaskMonitoringScreen = ({ navigation }) => {
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [mediaImages, setMediaImages] = useState([]);
   const [mediaVideos, setMediaVideos] = useState([]);
+  const detailSlideAnim = useRef(
+    new Animated.Value(Dimensions.get('window').width),
+  ).current;
+
+  useEffect(() => {
+    if (selectedTask) {
+      Animated.spring(detailSlideAnim, {
+        toValue: 0,
+        tension: 65,
+        friction: 11,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      detailSlideAnim.setValue(Dimensions.get('window').width);
+    }
+  }, [selectedTask, detailSlideAnim]);
+
+  const closeTaskDetail = useCallback(() => {
+    Animated.timing(detailSlideAnim, {
+      toValue: Dimensions.get('window').width,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setSelectedTask(null);
+    });
+  }, [detailSlideAnim]);
   const MediaViewer = mediaViewerOpen
     ? require('../components/MediaViewer/MediaViewer').default
     : null;
@@ -549,61 +578,78 @@ const TaskMonitoringScreen = ({ navigation }) => {
       <Modal
         visible={!!selectedTask}
         transparent
-        animationType="fade"
-        onRequestClose={() => setSelectedTask(null)}
+        animationType="none"
+        onRequestClose={closeTaskDetail}
       >
-        <Pressable
-          style={styles.detailOverlay}
-          onPress={() => setSelectedTask(null)}
+        <Animated.View
+          style={[
+            styles.detailScreen,
+            { transform: [{ translateX: detailSlideAnim }] },
+          ]}
         >
-          <Pressable style={styles.detailCard} onPress={() => {}}>
-            <View style={styles.detailHeader}>
-              <View style={styles.detailHeaderText}>
-                <Text style={styles.detailType}>
-                  {selectedTask?.taskCategory || selectedTask?.sourceLabel || 'Other'}
-                </Text>
-                <Text style={styles.detailTitle}>{selectedTask?.title}</Text>
-              </View>
+          <SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
+            <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+
+            {/* Minimal header */}
+            <View style={styles.detailHeaderBar}>
               <TouchableOpacity
-                style={styles.closeButton}
-                onPress={() => setSelectedTask(null)}
+                style={styles.detailBackBtn}
+                onPress={closeTaskDetail}
+                activeOpacity={0.7}
               >
                 <MaterialCommunityIcons
-                  name="close"
-                  size={20}
+                  name="arrow-left"
+                  size={22}
                   color={appTheme.colors.neutral.text}
                 />
               </TouchableOpacity>
+              <Text style={styles.detailHeaderTitle}>Task Details</Text>
             </View>
 
-            <View style={styles.detailMetaRow}>
-              <View style={styles.detailMetaItem}>
-                <MaterialCommunityIcons
-                  name="calendar-month-outline"
-                  size={16}
-                  color={appTheme.colors.neutral.textMuted}
-                />
-                <Text style={styles.detailMetaText}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.detailScrollContent}
+            >
+              {/* Meta row + title */}
+              <View style={styles.detailMetaTop}>
+                <Text style={styles.detailMetaCategory}>
+                  {selectedTask?.taskCategory ||
+                    selectedTask?.sourceLabel ||
+                    'Other'}
+                </Text>
+                <Text style={styles.detailMetaDot}>·</Text>
+                <Text style={styles.detailMetaDate}>
                   {formatDisplayDate(selectedTask?.date)}
                 </Text>
               </View>
-            </View>
+              <Text style={styles.detailMainTitle}>
+                {selectedTask?.title}
+              </Text>
 
-            <View style={styles.detailRow}>
-              <View style={styles.detailPill}>
-                <MaterialCommunityIcons
-                  name={
-                    STATUS_META[selectedTask?.status]?.icon ?? 'clock-outline'
-                  }
-                  size={14}
-                  color={
-                    STATUS_META[selectedTask?.status]?.color ??
-                    appTheme.colors.status.warning
-                  }
+              {/* Status pill */}
+              <View
+                style={[
+                  styles.detailStatusInline,
+                  {
+                    backgroundColor:
+                      STATUS_META[selectedTask?.status]?.backgroundColor ??
+                      '#FFF4E5',
+                  },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.detailStatusDot,
+                    {
+                      backgroundColor:
+                        STATUS_META[selectedTask?.status]?.color ??
+                        appTheme.colors.status.warning,
+                    },
+                  ]}
                 />
                 <Text
                   style={[
-                    styles.detailPillText,
+                    styles.detailStatusInlineText,
                     {
                       color:
                         STATUS_META[selectedTask?.status]?.color ??
@@ -614,53 +660,81 @@ const TaskMonitoringScreen = ({ navigation }) => {
                   {selectedTask?.status}
                 </Text>
               </View>
-              <View style={styles.detailPill}>
-                <MaterialCommunityIcons
-                  name="image-multiple-outline"
-                  size={14}
-                  color={appTheme.colors.neutral.textMuted}
-                />
-                <Text style={styles.detailPillText}>
-                  {selectedTask?.images} photos
+
+              {/* Media stats inline */}
+              <View style={styles.detailInlineStats}>
+                <View style={styles.detailInlineStat}>
+                  <Text style={styles.detailInlineStatValue}>
+                    {selectedTask?.images || 0}
+                  </Text>
+                  <Text style={styles.detailInlineStatLabel}>Photos</Text>
+                </View>
+                <View style={styles.detailInlineSep} />
+                <View style={styles.detailInlineStat}>
+                  <Text style={styles.detailInlineStatValue}>
+                    {selectedTask?.videos || 0}
+                  </Text>
+                  <Text style={styles.detailInlineStatLabel}>Videos</Text>
+                </View>
+                {(selectedTask?.images > 0 || selectedTask?.videos > 0) && (
+                  <TouchableOpacity
+                    style={styles.detailMediaLink}
+                    onPress={() => {
+                      const imgs = selectedTask?.imageUrls || [];
+                      const vids = selectedTask?.videoUrls || [];
+                      setMediaImages(imgs);
+                      setMediaVideos(vids);
+                      setMediaViewerOpen(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.detailMediaLinkText}>View Media</Text>
+                    <MaterialCommunityIcons
+                      name="arrow-right"
+                      size={14}
+                      color={appTheme.colors.brand.primary}
+                    />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Remark */}
+              <View style={styles.detailBlock}>
+                <Text style={styles.detailBlockLabel}>Remark</Text>
+                <Text style={styles.detailBlockBody}>
+                  {selectedTask?.remark || '—'}
                 </Text>
               </View>
-              <View style={styles.detailPill}>
-                <MaterialCommunityIcons
-                  name="video-outline"
-                  size={14}
-                  color={appTheme.colors.neutral.textMuted}
-                />
-                <Text style={styles.detailPillText}>
-                  {selectedTask?.videos} videos
-                </Text>
-              </View>
-            </View>
 
-            {(selectedTask?.images > 0 || selectedTask?.videos > 0) && (
-              <TouchableOpacity
-                style={styles.viewMediaButton}
-                onPress={() => {
-                  const imgs = selectedTask?.imageUrls || [];
-                  const vids = selectedTask?.videoUrls || [];
-                  setMediaImages(imgs);
-                  setMediaVideos(vids);
-                  setMediaViewerOpen(true);
-                }}
-                activeOpacity={0.8}
-              >
-                <MaterialCommunityIcons
-                  name="image-multiple"
-                  size={18}
-                  color="#FFFFFF"
-                />
-                <Text style={styles.viewMediaButtonText}>View Media</Text>
-              </TouchableOpacity>
-            )}
+              {/* Not Approved Reason */}
+              {selectedTask?.status === 'Not Approved' ? (
+                <View style={[styles.detailBlock, styles.detailBlockWarn]}>
+                  <View style={styles.detailBlockLabelRow}>
+                    <MaterialCommunityIcons
+                      name="alert-circle"
+                      size={13}
+                      color={appTheme.colors.status.danger}
+                    />
+                    <Text
+                      style={[
+                        styles.detailBlockLabel,
+                        { color: appTheme.colors.status.danger, marginBottom: 0 },
+                      ]}
+                    >
+                      Reason
+                    </Text>
+                  </View>
+                  <Text style={styles.detailBlockBody}>
+                    {selectedTask?.notApprovedRemark ||
+                      'No reason provided.'}
+                  </Text>
+                </View>
+              ) : null}
 
-            <Text style={styles.detailRemarkLabel}>Remark</Text>
-            <Text style={styles.detailRemark}>{selectedTask?.remark}</Text>
-          </Pressable>
-        </Pressable>
+              <View style={{ height: 24 }} />
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
       </Modal>
 
       {mediaViewerOpen && MediaViewer ? (
@@ -1113,116 +1187,167 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
   },
-  detailOverlay: {
+  // ─── Task Detail Screen (slide-from-right) ───
+  detailScreen: {
     flex: 1,
-    backgroundColor: 'rgba(11, 31, 42, 0.48)',
-    justifyContent: 'flex-end',
-    padding: 16,
+    backgroundColor: '#FFFFFF',
   },
-  detailCard: {
-    backgroundColor: appTheme.colors.neutral.surface,
-    borderRadius: 24,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(185, 199, 209, 0.9)',
-  },
-  detailHeader: {
+  detailHeaderBar: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    gap: 6,
   },
-  detailHeaderText: {
-    flex: 1,
-  },
-  detailType: {
-    color: appTheme.colors.brand.accent,
-    fontSize: 12,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  detailTitle: {
-    marginTop: 6,
-    color: appTheme.colors.neutral.text,
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: '800',
-  },
-  closeButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  detailBackBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F2F5F8',
   },
-  detailMetaRow: {
-    marginTop: 14,
-    gap: 8,
+  detailHeaderTitle: {
+    color: appTheme.colors.neutral.text,
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
-  detailMetaItem: {
+  detailScrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 24,
+  },
+  detailMetaTop: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    marginBottom: 6,
   },
-  detailMetaText: {
-    color: appTheme.colors.neutral.textMuted,
-    fontSize: 13,
-    fontWeight: '600',
+  detailMetaCategory: {
+    color: appTheme.colors.brand.accent,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
-  detailRow: {
-    marginTop: 16,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  detailPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#F5F8FA',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
-  detailPillText: {
+  detailMetaDot: {
     color: appTheme.colors.neutral.textMuted,
     fontSize: 12,
     fontWeight: '700',
   },
-  detailRemarkLabel: {
-    marginTop: 16,
-    color: appTheme.colors.neutral.text,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  detailRemark: {
-    marginTop: 6,
+  detailMetaDate: {
     color: appTheme.colors.neutral.textMuted,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 12,
     fontWeight: '600',
   },
-  viewMediaButton: {
-    marginTop: 16,
+  detailMainTitle: {
+    color: appTheme.colors.neutral.text,
+    fontSize: 19,
+    lineHeight: 26,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  detailStatusInline: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: appTheme.colors.brand.primaryDark,
-    borderRadius: 14,
-    paddingVertical: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 5,
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingLeft: 8,
+    paddingRight: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    marginBottom: 20,
   },
-  viewMediaButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
+  detailStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  detailStatusInlineText: {
+    fontSize: 12,
     fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  detailInlineStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#F1F5F9',
+    marginBottom: 18,
+  },
+  detailInlineStat: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 5,
+  },
+  detailInlineStatValue: {
+    color: appTheme.colors.neutral.text,
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  detailInlineStatLabel: {
+    color: appTheme.colors.neutral.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  detailInlineSep: {
+    width: 1,
+    height: 16,
+    backgroundColor: '#E2E8F0',
+    marginHorizontal: 16,
+  },
+  detailMediaLink: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(18, 59, 74, 0.18)',
+  },
+  detailMediaLinkText: {
+    color: appTheme.colors.brand.primary,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  detailBlock: {
+    marginBottom: 18,
+  },
+  detailBlockWarn: {
+    backgroundColor: 'rgba(180, 35, 24, 0.05)',
+    borderLeftWidth: 3,
+    borderLeftColor: appTheme.colors.status.danger,
+    paddingLeft: 12,
+    paddingVertical: 10,
+    paddingRight: 12,
+    borderRadius: 8,
+  },
+  detailBlockLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 6,
+  },
+  detailBlockLabel: {
+    color: appTheme.colors.neutral.textMuted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  detailBlockBody: {
+    color: appTheme.colors.neutral.text,
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '500',
   },
 });
 

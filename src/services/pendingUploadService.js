@@ -28,6 +28,28 @@ export const getPendingMediaUploadsCount = async () => {
   const queue = await readQueue();
   return queue.length;
 };
+
+let inFlightPendingByTaskRef = null;
+
+const buildCountsFromQueue = queue => {
+  const map = new Map();
+  for (const item of queue || []) {
+    const ref = String(item?.taskRef || '').trim();
+    if (!ref) {
+      continue;
+    }
+    map.set(ref, (map.get(ref) || 0) + 1);
+  }
+  return map;
+};
+
+export const getPendingMediaCountsByTaskRef = async () => {
+  if (inFlightPendingByTaskRef) {
+    return new Map(inFlightPendingByTaskRef);
+  }
+  const queue = await readQueue();
+  return buildCountsFromQueue(queue);
+};
 const MAX_IMAGE_UPLOAD_BYTES = 50 * 1024;
 const IMAGE_UPLOAD_DIMENSION = 800;
 const IMAGE_QUALITY_STEPS = [80, 70, 60, 50, 40, 30];
@@ -211,10 +233,54 @@ export const removePendingMediaUpload = async id => {
   });
 };
 
+const UPLOAD_CONCURRENCY = 2;
+
+const processQueueItem = async item => {
+  const localPath = asString(item?.localPath);
+  const storagePath = asString(item?.storagePath);
+  const contentType = asString(item?.contentType) || 'image/jpeg';
+
+  if (!localPath || !storagePath) {
+    return { ok: false, retryItem: item };
+  }
+
+  try {
+    let uploadPath = localPath;
+    let cleanupPath = null;
+
+    if (contentType.startsWith('image/')) {
+      const prepared = await prepareImageForUpload(localPath);
+      uploadPath = prepared.path;
+      cleanupPath = prepared.cleanupPath;
+    }
+
+    const uploadResult = await uploadFileToStorage(
+      storagePath,
+      uploadPath,
+      contentType,
+    );
+    if (!uploadResult || uploadResult.success !== true) {
+      throw new Error(
+        uploadResult?.error || `Upload failed for ${storagePath}`,
+      );
+    }
+    if (cleanupPath) {
+      await removeQueueItemFile(cleanupPath);
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      retryItem: { ...item, retries: Number(item?.retries || 0) + 1 },
+    };
+  }
+};
+
 export const flushPendingMediaUploads = async () => {
   return withQueueLock(async () => {
     const queue = await readQueue();
     if (!queue.length) {
+      inFlightPendingByTaskRef = null;
       return { processed: 0, succeeded: 0, failed: 0, remaining: 0 };
     }
 
@@ -223,57 +289,49 @@ export const flushPendingMediaUploads = async () => {
     let succeeded = 0;
     let failed = 0;
 
-    for (const item of queue) {
-      processed += 1;
+    // Initialize in-flight pending state (fresh snapshot of queue)
+    inFlightPendingByTaskRef = buildCountsFromQueue(queue);
 
-      const localPath = asString(item?.localPath);
-      const storagePath = asString(item?.storagePath);
-      const contentType = asString(item?.contentType) || 'image/jpeg';
-
-      if (!localPath || !storagePath) {
-        failed += 1;
-        nextQueue.push(item);
-      } else {
-        try {
-          let uploadPath = localPath;
-          let cleanupPath = null;
-
-          if (contentType.startsWith('image/')) {
-            const prepared = await prepareImageForUpload(localPath);
-            uploadPath = prepared.path;
-            cleanupPath = prepared.cleanupPath;
-          }
-
-          const uploadResult = await uploadFileToStorage(
-            storagePath,
-            uploadPath,
-            contentType,
-          );
-          if (!uploadResult || uploadResult.success !== true) {
-            throw new Error(
-              uploadResult?.error ||
-                `Upload failed for ${storagePath}`,
-            );
-          }
-          if (cleanupPath) {
-            await removeQueueItemFile(cleanupPath);
-          }
-          succeeded += 1;
-        } catch {
-          failed += 1;
-          nextQueue.push({
-            ...item,
-            retries: Number(item?.retries || 0) + 1,
-          });
-        }
+    const decrementInFlight = item => {
+      const ref = String(item?.taskRef || '').trim();
+      if (!ref || !inFlightPendingByTaskRef) {
+        return;
       }
+      const cur = inFlightPendingByTaskRef.get(ref) || 0;
+      if (cur <= 1) {
+        inFlightPendingByTaskRef.delete(ref);
+      } else {
+        inFlightPendingByTaskRef.set(ref, cur - 1);
+      }
+    };
 
-      // Notify mid-flight: pending = items not yet processed + items kept in nextQueue
-      const remainingNow = queue.length - processed + nextQueue.length;
-      notifyQueueListeners(remainingNow);
+    // Process in concurrent batches of UPLOAD_CONCURRENCY
+    for (let i = 0; i < queue.length; i += UPLOAD_CONCURRENCY) {
+      const batch = queue.slice(i, i + UPLOAD_CONCURRENCY);
+      const results = await Promise.all(batch.map(processQueueItem));
+
+      for (let idx = 0; idx < results.length; idx += 1) {
+        const result = results[idx];
+        const item = batch[idx];
+        processed += 1;
+        if (result.ok) {
+          succeeded += 1;
+          decrementInFlight(item);
+        } else {
+          failed += 1;
+          if (result.retryItem) {
+            nextQueue.push(result.retryItem);
+          } else {
+            decrementInFlight(item);
+          }
+        }
+        const remainingNow = queue.length - processed + nextQueue.length;
+        notifyQueueListeners(remainingNow);
+      }
     }
 
     await writeQueue(nextQueue);
+    inFlightPendingByTaskRef = null;
     notifyQueueListeners(nextQueue.length);
     return {
       processed,
