@@ -41,6 +41,7 @@ import { useLocation } from '../context/LocationContext';
    saveTaskCatalogCache,
    clearTaskCache,
    getTaskCatalog,
+   subscribeTaskCatalog,
  } from '../services/taskCacheService';
 
 const isPlainObject = value =>
@@ -1710,6 +1711,14 @@ const DashboardScreen = ({ navigation }) => {
     });
     return () => subscription.remove();
   }, [checkAndShowBatteryPrompt]);
+
+  // Keep task catalog in real-time sync with Firebase (new/edited/removed tasks).
+  useEffect(() => {
+    const unsubscribe = subscribeTaskCatalog(() => {
+      // Cache is kept fresh by the service; UI reads it on next form open.
+    });
+    return unsubscribe;
+  }, []);
 
 
   const handleRefreshTasks = async () => {

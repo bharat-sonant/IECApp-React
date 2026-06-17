@@ -1,4 +1,5 @@
-import { getData } from '../firebase/firebaseService';
+import { getData, initializeFirebaseApp } from '../firebase/firebaseService';
+import { FIREBASE_CONFIG } from '../firebase/firebaseConfig';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const TASK_CACHE_PREFIX = 'dashboard_tasks_cache';
@@ -79,6 +80,132 @@ const clearTaskCache = async () => {
   }
 };
 
+const catalogListeners = new Set();
+let activeCatalogUnsub = null;
+let liveCatalog = null;
+let syncStarting = false;
+
+const notifyCatalogListeners = () => {
+  for (const fn of catalogListeners) {
+    try {
+      fn(liveCatalog);
+    } catch {
+      // Ignore listener errors
+    }
+  }
+};
+
+const startCatalogSync = async () => {
+  if (activeCatalogUnsub || syncStarting) {
+    return;
+  }
+  syncStarting = true;
+  try {
+    const {
+      getDatabase,
+      ref,
+      onChildAdded,
+      onChildChanged,
+      onChildRemoved,
+    } = require('@react-native-firebase/database');
+
+    const cached = await readTaskCatalogCache();
+    liveCatalog =
+      cached && typeof cached === 'object' && !Array.isArray(cached)
+        ? { ...cached }
+        : {};
+
+    const app = await initializeFirebaseApp();
+    const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
+    const tasksRef = ref(db, 'IECData/Tasks');
+
+    const persistAndNotify = () => {
+      saveTaskCatalogCache(liveCatalog).catch(() => {});
+      notifyCatalogListeners();
+    };
+
+    const addedUnsub = onChildAdded(tasksRef, snapshot => {
+      const key = snapshot.key;
+      if (!key) {
+        return;
+      }
+      if (liveCatalog && Object.prototype.hasOwnProperty.call(liveCatalog, key)) {
+        return;
+      }
+      if (!liveCatalog) {
+        liveCatalog = {};
+      }
+      liveCatalog[key] = snapshot.val();
+      persistAndNotify();
+    });
+
+    const changedUnsub = onChildChanged(tasksRef, snapshot => {
+      const key = snapshot.key;
+      if (!key) {
+        return;
+      }
+      if (!liveCatalog) {
+        liveCatalog = {};
+      }
+      liveCatalog[key] = snapshot.val();
+      persistAndNotify();
+    });
+
+    const removedUnsub = onChildRemoved(tasksRef, snapshot => {
+      const key = snapshot.key;
+      if (!key || !liveCatalog || !(key in liveCatalog)) {
+        return;
+      }
+      delete liveCatalog[key];
+      persistAndNotify();
+    });
+
+    activeCatalogUnsub = () => {
+      try {
+        addedUnsub();
+      } catch {
+        // ignore
+      }
+      try {
+        changedUnsub();
+      } catch {
+        // ignore
+      }
+      try {
+        removedUnsub();
+      } catch {
+        // ignore
+      }
+      activeCatalogUnsub = null;
+    };
+  } catch {
+    // ignore — listener attach failed (offline, missing native module, etc.)
+  } finally {
+    syncStarting = false;
+  }
+};
+
+const stopCatalogSync = () => {
+  if (activeCatalogUnsub) {
+    activeCatalogUnsub();
+  }
+  liveCatalog = null;
+};
+
+const subscribeTaskCatalog = listener => {
+  if (typeof listener !== 'function') {
+    return () => {};
+  }
+  catalogListeners.add(listener);
+  startCatalogSync();
+  return () => {
+    catalogListeners.delete(listener);
+    if (catalogListeners.size === 0) {
+      stopCatalogSync();
+    }
+  };
+};
+
 export {
   buildDashboardTaskCacheKey,
   readDashboardTaskCache,
@@ -87,4 +214,5 @@ export {
   saveTaskCatalogCache,
   getTaskCatalog,
   clearTaskCache,
+  subscribeTaskCatalog,
 };
