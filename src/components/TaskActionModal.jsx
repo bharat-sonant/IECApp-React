@@ -540,10 +540,6 @@ const TaskActionModal = ({
   const [femaleCount, setFemaleCount] = useState('');
   const [otherCount, setOtherCount] = useState('');
   const [ageBelow18, setAgeBelow18] = useState('');
-  const [age18to30, setAge18to30] = useState('');
-  const [age31to45, setAge31to45] = useState('');
-  const [age46to60, setAge46to60] = useState('');
-  const [ageAbove60, setAgeAbove60] = useState('');
   const [remark, setRemark] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [inlineToast, setInlineToast] = useState(null);
@@ -601,10 +597,6 @@ const TaskActionModal = ({
       setFemaleCount('');
       setOtherCount('');
       setAgeBelow18('');
-      setAge18to30('');
-      setAge31to45('');
-      setAge46to60('');
-      setAgeAbove60('');
       setRemark('');
       setImages([]);
       setVideos([]);
@@ -676,10 +668,6 @@ const TaskActionModal = ({
       setFemaleCount('');
       setOtherCount('');
       setAgeBelow18('');
-      setAge18to30('');
-      setAge31to45('');
-      setAge46to60('');
-      setAgeAbove60('');
     }
   }, [participants]);
 
@@ -711,33 +699,18 @@ const TaskActionModal = ({
       return Number.isFinite(n) && n >= 0 ? n : 0;
     };
     const total = toInt(participants);
-    const ageSum =
-      toInt(ageBelow18) +
-      toInt(age18to30) +
-      toInt(age31to45) +
-      toInt(age46to60) +
-      toInt(ageAbove60);
+    const ageSum = toInt(ageBelow18);
     if (ageSum === total) {
       setFieldErrors(prev => {
-        if (
-          !prev.ageBelow18 &&
-          !prev.age18to30 &&
-          !prev.age31to45 &&
-          !prev.age46to60 &&
-          !prev.ageAbove60
-        ) {
+        if (!prev.ageBelow18) {
           return prev;
         }
         const next = { ...prev };
         delete next.ageBelow18;
-        delete next.age18to30;
-        delete next.age31to45;
-        delete next.age46to60;
-        delete next.ageAbove60;
         return next;
       });
     }
-  }, [ageBelow18, age18to30, age31to45, age46to60, ageAbove60, participants]);
+  }, [ageBelow18, participants]);
 
   const showInlineToast = (message, variant = 'warning') => {
     if (inlineToastTimerRef.current) {
@@ -1441,12 +1414,7 @@ const TaskActionModal = ({
     const participantsNum = toInt(participants);
     const genderSum =
       toInt(maleCount) + toInt(femaleCount) + toInt(otherCount);
-    const ageSum =
-      toInt(ageBelow18) +
-      toInt(age18to30) +
-      toInt(age31to45) +
-      toInt(age46to60) +
-      toInt(ageAbove60);
+    const ageSum = toInt(ageBelow18);
 
     if (participantsNum > 0) {
       if (genderSum !== participantsNum) {
@@ -1469,17 +1437,12 @@ const TaskActionModal = ({
       if (ageSum !== participantsNum) {
         setFieldErrors({
           ageBelow18: true,
-          age18to30: true,
-          age31to45: true,
-          age46to60: true,
-          ageAbove60: true,
         });
         showAlert({
-          title: 'Age Group Count Mismatch',
+          title: 'Age Count Mismatch',
           message:
-            `Age Groups (Below 18 + 18–30 + 31–45 + 46–60 + Above 60) ` +
-            `मिलाकर ${ageSum} हैं, पर Total Participants ${participantsNum} है। ` +
-            `कृपया Age count सही करें।`,
+            `Under 18 count ${ageSum} है, पर Total Participants ${participantsNum} है। ` +
+            `कृपया Under 18 count सही करें।`,
           variant: 'warning',
         });
         return;
@@ -1588,10 +1551,6 @@ const TaskActionModal = ({
         femaleCount: femaleCount.trim() === '' ? '' : String(toInt(femaleCount)),
         otherCount: otherCount.trim() === '' ? '' : String(toInt(otherCount)),
         ageBelow18: ageBelow18.trim() === '' ? '' : String(toInt(ageBelow18)),
-        age18to30: age18to30.trim() === '' ? '' : String(toInt(age18to30)),
-        age31to45: age31to45.trim() === '' ? '' : String(toInt(age31to45)),
-        age46to60: age46to60.trim() === '' ? '' : String(toInt(age46to60)),
-        ageAbove60: ageAbove60.trim() === '' ? '' : String(toInt(ageAbove60)),
         remark: remark.trim(),
         images,
         videos,
@@ -2131,44 +2090,12 @@ const TaskActionModal = ({
                       <View style={styles.ageList}>
                         {[
                           {
-                            label: 'Below 18',
+                            label: 'Under 18',
                             value: ageBelow18,
                             setter: setAgeBelow18,
                             errKey: 'ageBelow18',
                             icon: 'baby-face-outline',
                             color: '#10B981',
-                          },
-                          {
-                            label: '18 – 30',
-                            value: age18to30,
-                            setter: setAge18to30,
-                            errKey: 'age18to30',
-                            icon: 'account-outline',
-                            color: '#0EA5E9',
-                          },
-                          {
-                            label: '31 – 45',
-                            value: age31to45,
-                            setter: setAge31to45,
-                            errKey: 'age31to45',
-                            icon: 'account-tie-outline',
-                            color: '#F59E0B',
-                          },
-                          {
-                            label: '46 – 60',
-                            value: age46to60,
-                            setter: setAge46to60,
-                            errKey: 'age46to60',
-                            icon: 'account-clock-outline',
-                            color: '#EF4444',
-                          },
-                          {
-                            label: 'Above 60',
-                            value: ageAbove60,
-                            setter: setAgeAbove60,
-                            errKey: 'ageAbove60',
-                            icon: 'human-cane',
-                            color: '#6366F1',
                           },
                         ].map(item => (
                           <View key={item.errKey} style={styles.ageRow}>
