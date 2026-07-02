@@ -693,25 +693,6 @@ const TaskActionModal = ({
     }
   }, [maleCount, femaleCount, otherCount, participants]);
 
-  useEffect(() => {
-    const toInt = v => {
-      const n = parseInt(String(v || '').trim(), 10);
-      return Number.isFinite(n) && n >= 0 ? n : 0;
-    };
-    const total = toInt(participants);
-    const ageSum = toInt(ageBelow18);
-    if (ageSum === total) {
-      setFieldErrors(prev => {
-        if (!prev.ageBelow18) {
-          return prev;
-        }
-        const next = { ...prev };
-        delete next.ageBelow18;
-        return next;
-      });
-    }
-  }, [ageBelow18, participants]);
-
   const showInlineToast = (message, variant = 'warning') => {
     if (inlineToastTimerRef.current) {
       clearTimeout(inlineToastTimerRef.current);
@@ -1414,7 +1395,6 @@ const TaskActionModal = ({
     const participantsNum = toInt(participants);
     const genderSum =
       toInt(maleCount) + toInt(femaleCount) + toInt(otherCount);
-    const ageSum = toInt(ageBelow18);
 
     if (participantsNum > 0) {
       if (genderSum !== participantsNum) {
@@ -1429,20 +1409,6 @@ const TaskActionModal = ({
             `Gender (Male + Female + Other) मिलाकर ${genderSum} हैं, ` +
             `पर Total Participants ${participantsNum} है। ` +
             `कृपया Gender count सही करें।`,
-          variant: 'warning',
-        });
-        return;
-      }
-
-      if (ageSum !== participantsNum) {
-        setFieldErrors({
-          ageBelow18: true,
-        });
-        showAlert({
-          title: 'Age Count Mismatch',
-          message:
-            `Under 18 count ${ageSum} है, पर Total Participants ${participantsNum} है। ` +
-            `कृपया Under 18 count सही करें।`,
           variant: 'warning',
         });
         return;
