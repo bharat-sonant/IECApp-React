@@ -20,6 +20,7 @@ import {
   Image,
   StatusBar,
   Animated,
+  Easing,
   Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -39,7 +40,7 @@ import { getData } from '../firebase/firebaseService';
 import { loadLoginSession } from '../services/sessionService';
 import { saveTaskSubmission } from '../services/taskService';
 import { beginAppStateSuppression } from '../services/appStateGuard';
-import { getTaskCatalog } from '../services/taskCacheService';
+import { getTaskCatalog, clearTaskCache } from '../services/taskCacheService';
 
 const inlineToastStyles = {
   warning: {
@@ -533,6 +534,8 @@ const TaskActionModal = ({
   const [taskCatalog, setTaskCatalog] = useState(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshSpin = useRef(new Animated.Value(0)).current;
   const [isSaving, setIsSaving] = useState(false);
   const [ward, setWard] = useState('');
   const [participants, setParticipants] = useState('');
@@ -541,6 +544,7 @@ const TaskActionModal = ({
   const [otherCount, setOtherCount] = useState('');
   const [ageBelow18, setAgeBelow18] = useState('');
   const [remark, setRemark] = useState('');
+  const [selectedTopics, setSelectedTopics] = useState({});
   const [fieldErrors, setFieldErrors] = useState({});
   const [inlineToast, setInlineToast] = useState(null);
   const inlineToastTimerRef = useRef(null);
@@ -1311,12 +1315,14 @@ const TaskActionModal = ({
     if (item.title === 'Select task') {
       setSelectedTaskParam(null);
       setSelectedTaskMeta(null);
+      setSelectedTopics({});
       setDropdownOpen(false);
       return;
     }
 
     setSelectedTaskParam(item.title);
     setSelectedTaskMeta(item);
+    setSelectedTopics({});
     setDropdownOpen(false);
     setFieldErrors(prev => {
       if (!prev.selectedTask) {
@@ -1367,6 +1373,97 @@ const TaskActionModal = ({
       }
     }
   };
+
+  // Topics mapped to the currently selected task (from IECData/Tasks/{id}/topics).
+  // Returns an array of { topicId, name } from the { topicId: topicName } map.
+  const availableTopics = useMemo(() => {
+    const meta = selectedTaskMeta;
+    if (!meta) {
+      return [];
+    }
+    const taskId = String(meta.taskId || meta.id || '').trim();
+    let topicsMap =
+      (meta.raw && meta.raw.topics) ||
+      meta.topics ||
+      (taskId && taskCatalog && taskCatalog[taskId] && taskCatalog[taskId].topics) ||
+      null;
+    if (!topicsMap || typeof topicsMap !== 'object') {
+      return [];
+    }
+    return Object.entries(topicsMap)
+      .filter(([, name]) => String(name || '').trim() !== '')
+      .map(([topicId, name]) => ({ topicId: String(topicId), name: String(name).trim() }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [selectedTaskMeta, taskCatalog]);
+
+  const toggleTopic = topic => {
+    setSelectedTopics(prev => {
+      const next = { ...prev };
+      if (next[topic.topicId]) {
+        delete next[topic.topicId];
+      } else {
+        next[topic.topicId] = topic.name;
+      }
+      return next;
+    });
+    setFieldErrors(prev => {
+      if (!prev.topics) {
+        return prev;
+      }
+      const nextErrors = { ...prev };
+      delete nextErrors.topics;
+      return nextErrors;
+    });
+  };
+
+  // Re-fetch tasks from Firebase (clears cache) and refresh the list in place.
+  // Uses isRefreshing (not optionsLoading) so the sheet keeps showing the current
+  // list and does NOT collapse/resize while refreshing.
+  const handleRefreshTasks = useCallback(async () => {
+    if (isRefreshing) {
+      return;
+    }
+    setIsRefreshing(true);
+    try {
+      await clearTaskCache();
+      const catalog = await getTaskCatalog();
+      setTaskCatalog(catalog && typeof catalog === 'object' ? catalog : null);
+      const nextChoices = await buildTaskChoices();
+      setTaskChoices(Array.isArray(nextChoices) ? nextChoices : []);
+      setSelectedTaskParam(null);
+      setSelectedTaskMeta(null);
+      setSelectedTopics({});
+    } catch (error) {
+      showToast(error?.message || 'Unable to refresh tasks.', 'error');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [isRefreshing, buildTaskChoices, showToast]);
+
+  // Spin the refresh icon in place while refreshing.
+  useEffect(() => {
+    let loop;
+    if (isRefreshing) {
+      refreshSpin.setValue(0);
+      loop = Animated.loop(
+        Animated.timing(refreshSpin, {
+          toValue: 1,
+          duration: 800,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+      );
+      loop.start();
+    } else {
+      refreshSpin.stopAnimation();
+      refreshSpin.setValue(0);
+    }
+    return () => {
+      if (loop) {
+        loop.stop();
+      }
+    };
+  }, [isRefreshing, refreshSpin]);
 
   const handleSave = async () => {
     if (isSaving) {
@@ -1425,12 +1522,14 @@ const TaskActionModal = ({
       return;
     }
 
-    // Section 05 — Remark
-    if (!remark.trim()) {
-      setFieldErrors({ remark: true });
-      showInlineToast('Remark is required.', 'warning');
+    // Section 02 — Topics (min 1 required when the task has mapped topics)
+    if (availableTopics.length > 0 && Object.keys(selectedTopics).length === 0) {
+      setFieldErrors({ topics: true });
+      showInlineToast('Please select at least one topic.', 'warning');
       return;
     }
+
+    // Remark is optional now (kept only as extra context).
 
     setIsSaving(true);
     let capturedLocation = {
@@ -1518,6 +1617,7 @@ const TaskActionModal = ({
         otherCount: otherCount.trim() === '' ? '' : String(toInt(otherCount)),
         ageBelow18: ageBelow18.trim() === '' ? '' : String(toInt(ageBelow18)),
         remark: remark.trim(),
+        topics: selectedTopics,
         images,
         videos,
         location: capturedLocation,
@@ -1892,11 +1992,85 @@ const TaskActionModal = ({
                     )}
                   </View>
 
-                  {/* Section 02 — Activity Info */}
+                  {/* Section 02 — Topics */}
                   <View style={styles.section}>
                     <View style={styles.sectionHead}>
                       <View style={styles.sectionBadge}>
                         <Text style={styles.sectionBadgeText}>02</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sectionTitle}>
+                          Topics <Text style={styles.reqStar}>*</Text>
+                        </Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Select the topics covered in this activity
+                        </Text>
+                      </View>
+                    </View>
+
+                    {!selectedTaskParam ? (
+                      <Text style={styles.topicsHint}>
+                        Please select a task first to see its topics.
+                      </Text>
+                    ) : availableTopics.length === 0 ? (
+                      <Text style={styles.topicsHint}>
+                        No topics mapped for this task.
+                      </Text>
+                    ) : (
+                      <View
+                        style={[
+                          styles.topicCheckList,
+                          fieldErrors.topics && styles.topicCheckListError,
+                        ]}
+                      >
+                        {availableTopics.map((topic, idx) => {
+                          const isSel = !!selectedTopics[topic.topicId];
+                          const isLast = idx === availableTopics.length - 1;
+                          return (
+                            <TouchableOpacity
+                              key={topic.topicId}
+                              activeOpacity={0.7}
+                              style={[
+                                styles.topicCheckRow,
+                                !isLast && styles.topicCheckRowBorder,
+                              ]}
+                              onPress={() => toggleTopic(topic)}
+                              disabled={isSaving}
+                            >
+                              <View
+                                style={[
+                                  styles.topicCheckbox,
+                                  isSel && styles.topicCheckboxChecked,
+                                ]}
+                              >
+                                {isSel && (
+                                  <MaterialCommunityIcons
+                                    name="check"
+                                    size={14}
+                                    color="#FFFFFF"
+                                  />
+                                )}
+                              </View>
+                              <Text
+                                style={[
+                                  styles.topicCheckLabel,
+                                  isSel && styles.topicCheckLabelChecked,
+                                ]}
+                              >
+                                {topic.name}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Section 03 — Activity Info */}
+                  <View style={styles.section}>
+                    <View style={styles.sectionHead}>
+                      <View style={styles.sectionBadge}>
+                        <Text style={styles.sectionBadgeText}>03</Text>
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.sectionTitle}>Activity Info</Text>
@@ -1966,12 +2140,12 @@ const TaskActionModal = ({
                     </View>
                   </View>
 
-                  {/* Section 03 — Participant Details (only when total > 0) */}
+                  {/* Section 04 — Participant Details (only when total > 0) */}
                   {showParticipantDetails ? (
                     <View style={styles.section}>
                       <View style={styles.sectionHead}>
                         <View style={styles.sectionBadge}>
-                          <Text style={styles.sectionBadgeText}>03</Text>
+                          <Text style={styles.sectionBadgeText}>04</Text>
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.sectionTitle}>
@@ -2103,11 +2277,11 @@ const TaskActionModal = ({
                     </View>
                   ) : null}
 
-                  {/* Section 04 — Photos & Video */}
+                  {/* Section 05 — Photos & Video */}
                   <View style={styles.section}>
                     <View style={styles.sectionHead}>
                       <View style={styles.sectionBadge}>
-                        <Text style={styles.sectionBadgeText}>04</Text>
+                        <Text style={styles.sectionBadgeText}>05</Text>
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.sectionTitle}>Photos & Video</Text>
@@ -2321,26 +2495,22 @@ const TaskActionModal = ({
                     </View>
                   </View>
 
-                  {/* Section 05 — Description */}
+                  {/* Section 06 — Remarks */}
                   <View style={styles.section}>
                     <View style={styles.sectionHead}>
                       <View style={styles.sectionBadge}>
-                        <Text style={styles.sectionBadgeText}>05</Text>
+                        <Text style={styles.sectionBadgeText}>06</Text>
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.sectionTitle}>
-                          Topics covered <Text style={styles.reqStar}>*</Text>
-                        </Text>
+                        <Text style={styles.sectionTitle}>Remarks</Text>
                         <Text style={styles.sectionSubtitle}>
-                          Briefly describe about the activity
+                          Add any additional notes (optional)
                         </Text>
                       </View>
                     </View>
+
                     <TextInput
-                      style={[
-                        styles.descInput,
-                        fieldErrors.remark && styles.descInputError,
-                      ]}
+                      style={styles.descInput}
                       placeholder="Write your remark here..."
                       placeholderTextColor="#94A3B8"
                       multiline
@@ -2431,17 +2601,44 @@ const TaskActionModal = ({
                 >
                   <View style={styles.dropdownSheetHeader}>
                     <Text style={styles.dropdownSheetTitle}>Select task</Text>
-                    <TouchableOpacity
-                      onPress={() => setDropdownOpen(false)}
-                      style={styles.dropdownSheetCloseBtn}
-                      activeOpacity={0.75}
-                    >
-                      <MaterialCommunityIcons
-                        name="close"
-                        size={20}
-                        color={appTheme.colors.neutral.textMuted}
-                      />
-                    </TouchableOpacity>
+                    <View style={styles.dropdownSheetActions}>
+                      <TouchableOpacity
+                        onPress={handleRefreshTasks}
+                        style={styles.dropdownSheetCloseBtn}
+                        activeOpacity={0.75}
+                        disabled={isRefreshing}
+                      >
+                        <Animated.View
+                          style={{
+                            transform: [
+                              {
+                                rotate: refreshSpin.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: ['0deg', '360deg'],
+                                }),
+                              },
+                            ],
+                          }}
+                        >
+                          <MaterialCommunityIcons
+                            name="refresh"
+                            size={20}
+                            color={appTheme.colors.brand.primary}
+                          />
+                        </Animated.View>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setDropdownOpen(false)}
+                        style={styles.dropdownSheetCloseBtn}
+                        activeOpacity={0.75}
+                      >
+                        <MaterialCommunityIcons
+                          name="close"
+                          size={20}
+                          color={appTheme.colors.neutral.textMuted}
+                        />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   <ScrollView
                     nestedScrollEnabled
@@ -2906,6 +3103,65 @@ const styles = StyleSheet.create({
     borderColor: '#DC2626',
     backgroundColor: 'rgba(220, 38, 38, 0.04)',
   },
+  topicsHint: {
+    fontSize: 13,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+    paddingVertical: 8,
+  },
+  topicCheckList: {
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    overflow: 'hidden',
+  },
+  topicCheckListError: {
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(220, 38, 38, 0.04)',
+  },
+  topicCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  topicCheckRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEF2F6',
+  },
+  topicCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.6,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  topicCheckboxChecked: {
+    backgroundColor: '#123B4A',
+    borderColor: '#123B4A',
+  },
+  topicCheckLabel: {
+    flex: 1,
+    fontSize: 14,
+    color: '#334155',
+    fontWeight: '500',
+  },
+  topicCheckLabelChecked: {
+    color: '#0F172A',
+    fontWeight: '600',
+  },
+  remarkLabel: {
+    fontSize: 13.5,
+    color: '#475569',
+    fontWeight: '600',
+    marginTop: 16,
+    marginBottom: 8,
+  },
   pickerSelector: {
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
@@ -3064,6 +3320,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0F172A',
     letterSpacing: 0.2,
+  },
+  dropdownSheetActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   dropdownSheetCloseBtn: {
     width: 34,

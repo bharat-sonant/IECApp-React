@@ -13,9 +13,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
+import { getTaskCatalog } from '../services/taskCacheService';
 
 const TaskDetailModal = ({ visible, onClose, onStart, task, viewOnly = false }) => {
   const slideAnim = React.useRef(new Animated.Value(Dimensions.get('window').width)).current;
+  const [catalogTopics, setCatalogTopics] = React.useState(null);
 
   React.useEffect(() => {
     if (visible) {
@@ -29,6 +31,43 @@ const TaskDetailModal = ({ visible, onClose, onStart, task, viewOnly = false }) 
       slideAnim.setValue(Dimensions.get('window').width);
     }
   }, [visible, slideAnim]);
+
+  // Resolve the task's mapped topics — same lookup the action form uses:
+  // prefer inline topics, else look them up in the task catalog by id.
+  React.useEffect(() => {
+    let active = true;
+    const resolveTopics = async () => {
+      if (!visible || !task) {
+        setCatalogTopics(null);
+        return;
+      }
+      const inline = task.topics || task.raw?.topics;
+      if (inline && typeof inline === 'object' && !Array.isArray(inline)) {
+        setCatalogTopics(inline);
+        return;
+      }
+      const id = String(task.taskId || task.id || '').trim();
+      if (!id) {
+        setCatalogTopics(null);
+        return;
+      }
+      try {
+        const catalog = await getTaskCatalog();
+        const entry = catalog && catalog[id];
+        if (active) {
+          setCatalogTopics(entry && entry.topics ? entry.topics : null);
+        }
+      } catch (e) {
+        if (active) {
+          setCatalogTopics(null);
+        }
+      }
+    };
+    resolveTopics();
+    return () => {
+      active = false;
+    };
+  }, [visible, task]);
 
   if (!task) return null;
 
@@ -55,9 +94,19 @@ const TaskDetailModal = ({ visible, onClose, onStart, task, viewOnly = false }) 
     task.raw?.Description || 
     task.raw?.details || 
     task.raw?.Details || 
-    task.raw?.TaskDesc || 
-    task.raw?.TaskDetails || 
+    task.raw?.TaskDesc ||
+    task.raw?.TaskDetails ||
     'No description available for this task.';
+
+  // Topics mapped to this task ({ topicId: topicName }) shown point-wise.
+  const topicsMap = task.topics || task.raw?.topics || catalogTopics || null;
+  const topicsList =
+    topicsMap && typeof topicsMap === 'object' && !Array.isArray(topicsMap)
+      ? Object.values(topicsMap)
+          .map(v => String(v || '').trim())
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b))
+      : [];
 
   return (
     <Modal
@@ -90,7 +139,10 @@ const TaskDetailModal = ({ visible, onClose, onStart, task, viewOnly = false }) 
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
+          {/* 1. Task name + tags */}
           <View style={styles.titleSection}>
+            <Text style={styles.taskLabel}>Task Name</Text>
+            <Text style={styles.taskTitle}>{task.title}</Text>
             <View style={styles.tagRow}>
                 <View style={styles.categoryTag}>
                     <Text style={styles.categoryText}>{task.taskCategory || 'Task'}</Text>
@@ -101,16 +153,30 @@ const TaskDetailModal = ({ visible, onClose, onStart, task, viewOnly = false }) 
                     </View>
                 )}
             </View>
-            <Text style={styles.taskTitle}>{task.title}</Text>
           </View>
 
           <View style={styles.divider} />
 
+          {/* 2. Topics covered */}
+          {topicsList.length > 0 && (
+            <View style={styles.topicsSection}>
+              <Text style={styles.sectionLabel}>Topics Covered</Text>
+              {topicsList.map((name, i) => (
+                <View key={`${name}-${i}`} style={styles.topicPointRow}>
+                  <View style={styles.topicBullet} />
+                  <Text style={styles.topicPointText}>{name}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* 3. Description & guidelines */}
           <View style={styles.descriptionSection}>
             <Text style={styles.sectionLabel}>Description & Guidelines</Text>
             <Text style={styles.descriptionText}>{description}</Text>
           </View>
-          
+
+          {/* 4. Instructions */}
           <View style={styles.infoBox}>
             <MaterialCommunityIcons name="information-outline" size={20} color={appTheme.colors.brand.secondary} />
             <Text style={styles.infoText}>
@@ -192,11 +258,19 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   titleSection: {
-    marginBottom: 20,
+    marginBottom: 16,
+  },
+  taskLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 4,
   },
   tagRow: {
     flexDirection: 'row',
-    marginBottom: 12,
+    marginTop: 10,
   },
   categoryTag: {
     backgroundColor: appTheme.colors.brand.softTint,
@@ -219,6 +293,29 @@ const styles = StyleSheet.create({
   highPriority: {
     backgroundColor: 'rgba(180, 35, 24, 0.1)',
   },
+  topicsSection: {
+    marginBottom: 24,
+  },
+  topicPointRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 10,
+  },
+  topicBullet: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: appTheme.colors.brand.primary,
+    marginTop: 7,
+    marginRight: 11,
+  },
+  topicPointText: {
+    flex: 1,
+    fontSize: 14.5,
+    lineHeight: 21,
+    color: '#334155',
+    fontWeight: '500',
+  },
   priorityText: {
     fontSize: 11,
     fontWeight: '600',
@@ -226,10 +323,10 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   taskTitle: {
-    fontSize: 24,
-    fontWeight: '800',
+    fontSize: 19,
+    fontWeight: '700',
     color: appTheme.colors.neutral.text,
-    lineHeight: 32,
+    lineHeight: 26,
   },
   divider: {
     height: 1,
@@ -264,9 +361,10 @@ const styles = StyleSheet.create({
   infoText: {
     flex: 1,
     marginLeft: 12,
+    marginTop: 1,
     fontSize: 13,
     color: appTheme.colors.neutral.textMuted,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   footer: {
     padding: 20,

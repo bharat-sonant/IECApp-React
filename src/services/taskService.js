@@ -91,6 +91,7 @@ const buildOldTaskPayload = ({
   otherCount,
   ageBelow18,
   taskChoice,
+  topics,
   currentDateTime,
   latitude,
   longitude,
@@ -164,6 +165,22 @@ const buildOldTaskPayload = ({
       payload[key] = v;
     }
   });
+
+  // Covered topics saved as { topicId: topicName } (same format as the mapping).
+  const normalizedTopics =
+    topics && typeof topics === 'object' && !Array.isArray(topics)
+      ? Object.entries(topics).reduce((acc, [id, name]) => {
+          const key = asString(id);
+          const val = asString(name);
+          if (key && val) {
+            acc[key] = val;
+          }
+          return acc;
+        }, {})
+      : {};
+  if (Object.keys(normalizedTopics).length > 0) {
+    payload.topics = normalizedTopics;
+  }
 
   return payload;
 };
@@ -258,6 +275,7 @@ export const saveTaskSubmission = async ({
   otherCount,
   ageBelow18,
   remark,
+  topics,
   images,
   videos,
   location,
@@ -316,6 +334,7 @@ export const saveTaskSubmission = async ({
     otherCount,
     ageBelow18,
     taskChoice,
+    topics,
     currentDateTime,
     latitude: location?.latitude ?? STATIC_LOCATION.latitude,
     longitude: location?.longitude ?? STATIC_LOCATION.longitude,
