@@ -20,6 +20,11 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import appTheme from '../theme/appTheme';
 import { useTaskMonitoring } from '../actions/taskMonitoringActions';
+import TaskActionModal from '../components/TaskActionModal';
+import {
+  getPendingMediaCountsByTaskRef,
+  subscribePendingMediaQueue,
+} from '../services/pendingUploadService';
 
 const STATUS_META = {
   Pending: {
@@ -131,6 +136,7 @@ const TaskMonitoringScreen = ({ navigation }) => {
     moveCalendarYear,
     loadTasks,
     loading,
+    patchTaskLocally,
   } = useTaskMonitoring();
 
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -139,6 +145,31 @@ const TaskMonitoringScreen = ({ navigation }) => {
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [mediaImages, setMediaImages] = useState([]);
   const [mediaVideos, setMediaVideos] = useState([]);
+  const [repickModalOpen, setRepickModalOpen] = useState(false);
+  const [repickInitialValues, setRepickInitialValues] = useState(null);
+  const [pendingUploadMap, setPendingUploadMap] = useState(new Map());
+
+  useEffect(() => {
+    let isMounted = true;
+    const refresh = async () => {
+      try {
+        const map = await getPendingMediaCountsByTaskRef();
+        if (isMounted) {
+          setPendingUploadMap(map);
+        }
+      } catch {
+        // Ignore
+      }
+    };
+    refresh();
+    const unsubscribe = subscribePendingMediaQueue(() => {
+      refresh();
+    });
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
   const detailSlideAnim = useRef(
     new Animated.Value(Dimensions.get('window').width),
   ).current;
@@ -165,6 +196,41 @@ const TaskMonitoringScreen = ({ navigation }) => {
       setSelectedTask(null);
     });
   }, [detailSlideAnim]);
+
+  const handleRepickTask = useCallback(() => {
+    if (!selectedTask) return;
+    setRepickInitialValues(selectedTask);
+    Animated.timing(detailSlideAnim, {
+      toValue: Dimensions.get('window').width,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setSelectedTask(null);
+      setRepickModalOpen(true);
+    });
+  }, [selectedTask, detailSlideAnim]);
+
+  const handleRepickClose = useCallback(() => {
+    setRepickModalOpen(false);
+    setRepickInitialValues(null);
+  }, []);
+
+  const handleRepickSaved = useCallback(
+    info => {
+      const target = repickInitialValues;
+      if (target && info?.repick && info?.updates) {
+        patchTaskLocally(
+          t => t?.listKey && t.listKey === target.listKey,
+          info.updates,
+        );
+      }
+      setRepickModalOpen(false);
+      setRepickInitialValues(null);
+      loadTasks();
+    },
+    [repickInitialValues, patchTaskLocally, loadTasks],
+  );
+
   const MediaViewer = mediaViewerOpen
     ? require('../components/MediaViewer/MediaViewer').default
     : null;
@@ -192,12 +258,29 @@ const TaskMonitoringScreen = ({ navigation }) => {
   }, []);
 
   const renderTask = ({ item }) => {
-    const status = STATUS_META[item.status] ?? STATUS_META.Pending;
     const priorityText = item.type
       ? String(item.type).charAt(0).toUpperCase() +
         String(item.type).slice(1).toLowerCase()
       : 'Medium';
     const categoryText = item.taskCategory || 'Other';
+
+    const taskRef =
+      item?.userId &&
+      item?.datePath?.year &&
+      item?.datePath?.month &&
+      item?.datePath?.isoDate &&
+      item?.taskKey &&
+      item?.taskCount
+        ? `IECData/IECTasks/${item.userId}/${item.datePath.year}/${item.datePath.month}/${item.datePath.isoDate}/${item.taskKey}/${item.taskCount}`
+        : '';
+    const pendingUploadCount = taskRef
+      ? Number(pendingUploadMap.get(taskRef) || 0)
+      : 0;
+    const isUploading = pendingUploadCount > 0;
+    const totalMedia = Number(item?.images || 0) + Number(item?.videos || 0);
+    const uploadedMedia = Math.max(0, totalMedia - pendingUploadCount);
+    const displayStatusKey = isUploading ? 'Pending' : item.status;
+    const status = STATUS_META[displayStatusKey] ?? STATUS_META.Pending;
 
     return (
       <Pressable
@@ -247,16 +330,46 @@ const TaskMonitoringScreen = ({ navigation }) => {
               {status.label}
             </Text>
           </View>
-          <View style={styles.mediaChip}>
-            <MaterialCommunityIcons
-              name="camera-burst"
-              size={14}
-              color={appTheme.colors.neutral.textMuted}
-            />
-            <Text style={styles.mediaText}>
-              {item.images} photos, {item.videos} videos
-            </Text>
-          </View>
+          {isUploading ? (
+            <View style={styles.uploadingChip}>
+              <ActivityIndicator
+                size="small"
+                color={appTheme.colors.brand.primary}
+              />
+              <View>
+                <Text style={styles.uploadingChipText}>
+                  Uploading {uploadedMedia}/{totalMedia || pendingUploadCount}
+                </Text>
+                <View style={styles.uploadProgressTrack}>
+                  <View
+                    style={[
+                      styles.uploadProgressFill,
+                      {
+                        width:
+                          totalMedia > 0
+                            ? `${Math.min(
+                                100,
+                                (uploadedMedia / totalMedia) * 100,
+                              )}%`
+                            : '0%',
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.mediaChip}>
+              <MaterialCommunityIcons
+                name="camera-burst"
+                size={14}
+                color={appTheme.colors.neutral.textMuted}
+              />
+              <Text style={styles.mediaText}>
+                {item.images} photos, {item.videos} videos
+              </Text>
+            </View>
+          )}
         </View>
       </Pressable>
     );
@@ -733,6 +846,23 @@ const TaskMonitoringScreen = ({ navigation }) => {
 
               <View style={{ height: 24 }} />
             </ScrollView>
+
+            {selectedTask?.status === 'Not Approved' ? (
+              <View style={styles.repickFooter}>
+                <TouchableOpacity
+                  style={styles.repickButton}
+                  activeOpacity={0.85}
+                  onPress={handleRepickTask}
+                >
+                  <MaterialCommunityIcons
+                    name="refresh"
+                    size={16}
+                    color="#FFF"
+                  />
+                  <Text style={styles.repickButtonText}>Re-pick Task</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
           </SafeAreaView>
         </Animated.View>
       </Modal>
@@ -746,6 +876,14 @@ const TaskMonitoringScreen = ({ navigation }) => {
         onClose={() => setMediaViewerOpen(false)}
       />
       ) : null}
+
+      <TaskActionModal
+        visible={repickModalOpen}
+        mode="repick"
+        initialValues={repickInitialValues}
+        onClose={handleRepickClose}
+        onSaved={handleRepickSaved}
+      />
     </SafeAreaView>
   );
 };
@@ -998,6 +1136,34 @@ const styles = StyleSheet.create({
     color: appTheme.colors.neutral.textMuted,
     fontSize: 12,
     fontWeight: '700',
+  },
+  uploadingChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  uploadingChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: appTheme.colors.brand.primary,
+    letterSpacing: 0.2,
+  },
+  uploadProgressTrack: {
+    marginTop: 4,
+    width: 70,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(18, 59, 74, 0.10)',
+    overflow: 'hidden',
+  },
+  uploadProgressFill: {
+    height: '100%',
+    backgroundColor: appTheme.colors.brand.accent,
+    borderRadius: 999,
   },
   emptyState: {
     marginTop: 8,
@@ -1328,6 +1494,30 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingRight: 12,
     borderRadius: 8,
+  },
+  repickFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#EEF2F7',
+    backgroundColor: '#FFF',
+  },
+  repickButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: appTheme.colors.brand.primary,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  repickButtonText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   detailBlockLabelRow: {
     flexDirection: 'row',

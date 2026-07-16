@@ -525,6 +525,7 @@ const TaskActionModal = ({
   mode,
   taskOptions = [],
   initialTask = null,
+  initialValues = null,
 }) => {
   const { showAlert, showToast } = useAppFeedback();
   const [selectedTaskParam, setSelectedTaskParam] = useState(null);
@@ -552,6 +553,8 @@ const TaskActionModal = ({
   // Media states
   const [images, setImages] = useState([]);
   const [videos, setVideos] = useState([]);
+  const [initialImageSlots, setInitialImageSlots] = useState([]);
+  const [initialVideoSlots, setInitialVideoSlots] = useState([]);
   const [isCameraVisible, setIsCameraVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -604,6 +607,8 @@ const TaskActionModal = ({
       setRemark('');
       setImages([]);
       setVideos([]);
+      setInitialImageSlots([]);
+      setInitialVideoSlots([]);
       setSelectedTaskParam(null);
       setSelectedTaskMeta(null);
       setDropdownOpen(false);
@@ -1290,7 +1295,9 @@ const TaskActionModal = ({
         const nextChoices = await buildTaskChoices();
         if (isActive) {
           setTaskChoices(nextChoices);
-          setSelectedTaskParam(null);
+          if (mode !== 'repick') {
+            setSelectedTaskParam(null);
+          }
         }
       } catch (error) {
         if (isActive) {
@@ -1310,6 +1317,107 @@ const TaskActionModal = ({
       isActive = false;
     };
   }, [visible, mode, buildTaskChoices]);
+
+  // Prefill everything for repick mode from a previously submitted (Not Approved) task.
+  useEffect(() => {
+    if (!visible || mode !== 'repick' || !initialValues) {
+      return;
+    }
+
+    const iv = initialValues;
+    setWard(String(iv.wardNo || '').trim());
+    setParticipants(String(iv.noOfParticipants || '').trim());
+    setMaleCount(String(iv.maleCount || '').trim());
+    setFemaleCount(String(iv.femaleCount || '').trim());
+    setOtherCount(String(iv.otherCount || '').trim());
+    setAgeBelow18(String(iv.ageBelow18 || '').trim());
+    setRemark(String(iv.remark || '').trim());
+    // Firebase auto-converts sparse numeric-keyed objects (e.g. {2:.., 4:.., 5:..})
+    // into arrays on read. Normalize either shape into a plain {id: name} map,
+    // skipping null/empty slots.
+    const normalizeTopicsMap = src => {
+      if (!src || typeof src !== 'object') return {};
+      const out = {};
+      const entries = Array.isArray(src)
+        ? src.map((v, i) => [String(i), v])
+        : Object.entries(src);
+      for (const [k, v] of entries) {
+        if (v === null || v === undefined) continue;
+        const key = String(k);
+        const val = String(v).trim();
+        if (key && val) {
+          out[key] = val;
+        }
+      }
+      return out;
+    };
+    const savedTopics = normalizeTopicsMap(iv.topics);
+    setSelectedTopics(savedTopics);
+
+    const imgSlots = Array.isArray(iv.imageSlots) ? iv.imageSlots : [];
+    const vidSlots = Array.isArray(iv.videoSlots) ? iv.videoSlots : [];
+    console.log('[TaskActionModal repick prefill]', {
+      taskKey: iv.taskKey,
+      taskCount: iv.taskCount,
+      datePath: iv.datePath,
+      imgSlotsCount: imgSlots.length,
+      imgSlots,
+      vidSlotsCount: vidSlots.length,
+      vidSlots,
+    });
+    setInitialImageSlots(imgSlots);
+    setInitialVideoSlots(vidSlots);
+    setImages(imgSlots.map(s => s.url).filter(Boolean));
+    setVideos(vidSlots.map(s => s.url).filter(Boolean));
+
+    const resolvedTaskId = String(iv.taskKey || iv.taskId || iv.id || '').trim();
+    const taskMeta = {
+      id: resolvedTaskId,
+      taskId: resolvedTaskId,
+      title: String(iv.title || '').trim(),
+      taskCategory: String(iv.taskCategory || 'Other').trim(),
+      category: String(iv.taskCategory || 'Other').trim(),
+      priority: String(iv.priority || '').trim(),
+      type: String(iv.type || '').trim(),
+      sourceLabel: String(iv.sourceLabel || iv.taskCategory || '').trim(),
+      sourceKey: String(iv.sourceKey || '').trim(),
+    };
+    setSelectedTaskParam(taskMeta.title || null);
+    setSelectedTaskMeta(taskMeta);
+
+    // Fetch the FULL topics for this task from IECData/Tasks/{taskId}/topics
+    // so availableTopics can show the whole list. If not found, fall back
+    // to iv.topics (only the previously-selected subset).
+    if (resolvedTaskId) {
+      (async () => {
+        try {
+          const catalogTopics = await getData(
+            `IECData/Tasks/${resolvedTaskId}/topics`,
+          );
+          const catalogMap = normalizeTopicsMap(catalogTopics);
+          const finalTopics =
+            Object.keys(catalogMap).length > 0
+              ? catalogMap
+              : Object.keys(savedTopics).length > 0
+                ? savedTopics
+                : null;
+          if (finalTopics) {
+            setSelectedTaskMeta(prev =>
+              prev
+                ? {
+                    ...prev,
+                    topics: finalTopics,
+                    raw: { ...(prev.raw || {}), topics: finalTopics },
+                  }
+                : prev,
+            );
+          }
+        } catch (e) {
+          // Silent — availableTopics will fall back to catalog or stay empty
+        }
+      })();
+    }
+  }, [visible, mode, initialValues]);
 
   const handleSelectTask = async item => {
     if (item.title === 'Select task') {
@@ -1593,6 +1701,36 @@ const TaskActionModal = ({
       delete taskWithoutOriginalPath.originalPath;
       delete taskWithoutOriginalPath.raw;
 
+      let repickContext = null;
+      if (mode === 'repick' && initialValues) {
+        const buildMediaDiff = (currentUris, initialSlots) => {
+          const unchanged = [];
+          const newLocal = [];
+          currentUris.forEach(uri => {
+            const slot = initialSlots.find(s => s.url === uri);
+            if (slot) {
+              unchanged.push(slot);
+            } else {
+              newLocal.push(uri);
+            }
+          });
+          const freed = initialSlots.filter(
+            s => !currentUris.includes(s.url),
+          );
+          return { unchanged, newLocal, freed };
+        };
+        const imageDiff = buildMediaDiff(images, initialImageSlots);
+        const videoDiff = buildMediaDiff(videos, initialVideoSlots);
+        repickContext = {
+          userId: String(initialValues.userId || '').trim(),
+          taskKey: String(initialValues.taskKey || '').trim(),
+          taskCount: String(initialValues.taskCount || '').trim(),
+          datePath: initialValues.datePath || null,
+          images: imageDiff,
+          videos: videoDiff,
+        };
+      }
+
       await saveTaskSubmission({
         mode,
         selectedTask: {
@@ -1621,11 +1759,29 @@ const TaskActionModal = ({
         images,
         videos,
         location: capturedLocation,
+        repickContext,
       });
 
       setFieldErrors({});
       showToast('Task submitted.', 'success');
-      onSaved?.();
+      if (mode === 'repick') {
+        onSaved?.({
+          repick: true,
+          updates: {
+            status: 'Pending',
+            remark: remark.trim(),
+            wardNo: ward.trim(),
+            noOfParticipants: String(participantsNum),
+            maleCount: maleCount.trim(),
+            femaleCount: femaleCount.trim(),
+            otherCount: otherCount.trim(),
+            ageBelow18: ageBelow18.trim(),
+            topics: { ...selectedTopics },
+          },
+        });
+      } else {
+        onSaved?.();
+      }
       onClose();
     } catch (error) {
       showInlineToast(error?.message || 'Unable to save task.', 'error');
@@ -1908,7 +2064,7 @@ const TaskActionModal = ({
                       ) : null}
                     </View>
 
-                    {mode === 'pick_task' ? (
+                    {mode === 'pick_task' || mode === 'repick' ? (
                       <View
                         style={[
                           styles.taskPicker,
@@ -2373,6 +2529,19 @@ const TaskActionModal = ({
                             <Image
                               source={{ uri: imgUri }}
                               style={styles.previewImg}
+                              onError={e => {
+                                console.log('[form Image load error]', {
+                                  index,
+                                  uri: imgUri,
+                                  error: e?.nativeEvent,
+                                });
+                              }}
+                              onLoad={() => {
+                                console.log('[form Image loaded]', {
+                                  index,
+                                  uri: imgUri,
+                                });
+                              }}
                             />
                             <TouchableOpacity
                               style={styles.removeMediaBtn}

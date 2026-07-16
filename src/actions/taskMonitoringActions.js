@@ -127,6 +127,24 @@ export const useTaskMonitoring = () => {
 
   // Clear cache on unmount (handled automatically by state reset)
 
+  const patchTaskLocally = useCallback((matcher, patch) => {
+    if (typeof matcher !== 'function' || !patch) {
+      return;
+    }
+    setTasks(prev =>
+      prev.map(task => (matcher(task) ? { ...task, ...patch } : task)),
+    );
+    setTaskCache(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(dateKey => {
+        next[dateKey] = (next[dateKey] || []).map(task =>
+          matcher(task) ? { ...task, ...patch } : task,
+        );
+      });
+      return next;
+    });
+  }, []);
+
   const moveCalendarMonth = offset => {
     setCalendarMonth(
       prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1),
@@ -171,5 +189,6 @@ export const useTaskMonitoring = () => {
     moveCalendarYear,
     openDatePicker,
     loadTasks,
+    patchTaskLocally,
   };
 };

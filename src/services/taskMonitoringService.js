@@ -90,6 +90,18 @@ const buildStorageUrl = (
   }
 
   const url = `${CITY.firebaseStoragePath}${encodedPath}?alt=media${cacheBuster}`;
+  console.log('[buildStorageUrl]', {
+    type,
+    inputPath: path,
+    resolvedContextDate:
+      (parentData && parentData.date) ||
+      (taskData && taskData.date) ||
+      null,
+    resolvedContextAt:
+      (parentData && parentData._at) || (taskData && taskData._at) || null,
+    fullPath,
+    url,
+  });
   return url;
 };
 
@@ -164,9 +176,13 @@ const resolveSessionUserId = session =>
   );
 
 const getDateFromTaskData = taskData => {
-  const _at = taskData?._at || taskData?.createdOn || taskData?.date;
-  if (_at) {
-    const dateStr = String(_at).split(' ')[0];
+  // `date` is the ISO date of the DB path (set by the caller via mediaContext)
+  // and is the source of truth for storage-path construction. `_at` gets
+  // updated on re-pick and would produce a wrong storage URL if used first.
+  const source =
+    taskData?.date || taskData?._at || taskData?.createdOn;
+  if (source) {
+    const dateStr = String(source).split(' ')[0];
     if (dateStr.includes('-')) return dateStr;
   }
   return null;
@@ -216,6 +232,41 @@ const buildTaskType = (task, fallbackType) => {
 };
 
 const resolveTaskStatus = task => {
+  // approvalHistory (if present) is the source of truth: the LATEST entry's
+  // status decides current UI status. This way a user re-pick immediately
+  // moves status back to Pending without clearing portal-set flags.
+  const history = task?.approvalHistory;
+  if (history && typeof history === 'object') {
+    // Firebase may store numeric-keyed nodes as an array — handle both shapes.
+    const ranked = Object.keys(history)
+      .map(k => ({ key: k, num: parseInt(k, 10), entry: history[k] }))
+      .filter(x => x.entry && typeof x.entry === 'object')
+      .sort((a, b) => {
+        if (Number.isFinite(a.num) && Number.isFinite(b.num)) {
+          return b.num - a.num;
+        }
+        if (Number.isFinite(a.num)) return -1;
+        if (Number.isFinite(b.num)) return 1;
+        return String(b.key).localeCompare(String(a.key));
+      });
+    if (ranked.length > 0) {
+      const latestStatus = String(
+        ranked[0].entry?.status || ranked[0].entry?.action || '',
+      )
+        .toLowerCase()
+        .trim();
+      if (latestStatus === 'resubmitted') {
+        return 'Pending';
+      }
+      if (latestStatus === 'not_approved' || latestStatus === 'notapproved') {
+        return 'Not Approved';
+      }
+      if (latestStatus === 'approved') {
+        return 'Approved';
+      }
+    }
+  }
+
   const approvedRaw = getFirstText(
     task?.approvedStatus,
     task?.ApprovedStatus,
@@ -551,6 +602,7 @@ const flattenTaskNode = (
   sourceLabel,
   taskCatalog = null,
   baseUserId = '',
+  baseDate = '',
 ) => {
   const seen = new Set();
   const walk = (node, trail = []) => {
@@ -626,7 +678,11 @@ const flattenTaskNode = (
             taskId,
             itemKey,
             mediaKey: itemKey,
-            date: date || _at,
+            // Storage-path date MUST be the ISO date of the DB path being
+            // walked — NOT `_at`, because `_at` gets overwritten on re-pick
+            // and would then generate a wrong storage URL (pointing to a
+            // path that doesn't exist).
+            date: baseDate || date || _at,
             _at: _at || date,
           };
 
@@ -638,12 +694,40 @@ const flattenTaskNode = (
           );
 
           // Build full path from filename + task data
-          const imageUrls = imageKeys
-            .map(k => buildStorageUrl(item[k], 'image', mediaContext, mediaContext))
+          const imageSlots = imageKeys
+            .map(k => {
+              const filename = getFirstText(item?.[k]);
+              const url = buildStorageUrl(item[k], 'image', mediaContext, mediaContext);
+              if (!url) return null;
+              return { slotKey: k, filename, url };
+            })
             .filter(Boolean);
-          const videoUrls = videoKeys
-            .map(k => buildStorageUrl(item[k], 'video', mediaContext, mediaContext))
+          const videoSlots = videoKeys
+            .map(k => {
+              const filename = getFirstText(item?.[k]);
+              const url = buildStorageUrl(item[k], 'video', mediaContext, mediaContext);
+              if (!url) return null;
+              return { slotKey: k, filename, url };
+            })
             .filter(Boolean);
+          const imageUrls = imageSlots.map(s => s.url);
+          const videoUrls = videoSlots.map(s => s.url);
+
+          // Prefer the walked base date (DB path date) — `_at` can drift
+          // forward on re-pick and would produce a wrong path.
+          const isoDateForPath =
+            baseDate || date || (_at ? String(_at).split(' ')[0] : '');
+          const dateForPath = isoDateForPath && isoDateForPath.includes('-')
+            ? isoDateForPath
+            : '';
+          const yearForPath = dateForPath ? dateForPath.split('-')[0] : '';
+          const monthNumForPath = dateForPath
+            ? parseInt(dateForPath.split('-')[1], 10)
+            : NaN;
+          const monthNameForPath =
+            Number.isFinite(monthNumForPath) && monthNumForPath >= 1 && monthNumForPath <= 12
+              ? monthNames[monthNumForPath - 1]
+              : '';
 
           return [
             {
@@ -681,10 +765,49 @@ const flattenTaskNode = (
                 item?.Remarks,
               ),
               notApprovedRemark: getFirstText(item?.notApprovedRemark),
+              wardNo: getFirstText(item?.wardNo, item?.WardNo, item?.ward),
+              noOfParticipants: getFirstText(
+                item?.noOfParticipants,
+                item?.NoOfParticipants,
+                item?.participants,
+              ),
+              maleCount: getFirstText(item?.maleCount, item?.MaleCount),
+              femaleCount: getFirstText(item?.femaleCount, item?.FemaleCount),
+              otherCount: getFirstText(item?.otherCount, item?.OtherCount),
+              ageBelow18: getFirstText(item?.ageBelow18, item?.AgeBelow18),
+              // Firebase may return a numeric-keyed topics node as either a
+              // sparse array [null, val2, null, val4, val5] or as an object
+              // {2:.., 4:.., 5:..}. Normalize either shape to {id: name}.
+              topics: (() => {
+                const src = item?.topics;
+                if (!src || typeof src !== 'object') return null;
+                const out = {};
+                const entries = Array.isArray(src)
+                  ? src.map((v, i) => [String(i), v])
+                  : Object.entries(src);
+                for (const [k, v] of entries) {
+                  if (v === null || v === undefined) continue;
+                  const key = String(k);
+                  const val = String(v).trim();
+                  if (key && val) {
+                    out[key] = val;
+                  }
+                }
+                return Object.keys(out).length > 0 ? out : null;
+              })(),
               images: imageUrls.length,
               videos: videoUrls.length,
               imageUrls,
               videoUrls,
+              imageSlots,
+              videoSlots,
+              taskCount: itemKey,
+              taskKey: taskId,
+              datePath: {
+                year: yearForPath,
+                month: monthNameForPath,
+                isoDate: dateForPath,
+              },
             },
           ];
         }
@@ -769,6 +892,7 @@ export const loadTasks = async selectedDate => {
     'Task',
     taskCatalog,
     loginId,
+    dateParts.isoDate,
   ).map(task => ({
     ...task,
     date: task.date || dateParts.isoDate,

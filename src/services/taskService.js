@@ -265,6 +265,263 @@ const sanitizeTaskBucket = node => {
   return nextNode;
 };
 
+const allocateMediaSlots = ({ diff, kindPrefix, ext, buildStoragePath }) => {
+  const usedSlotNums = new Set();
+  const collectUsed = list =>
+    list.forEach(s => {
+      const n = parseInt(
+        String(s?.slotKey || '').replace(kindPrefix, ''),
+        10,
+      );
+      if (Number.isFinite(n)) {
+        usedSlotNums.add(n);
+      }
+    });
+  collectUsed(diff.unchanged);
+  collectUsed(diff.freed);
+
+  const freedQueue = [...diff.freed];
+  let nextNewSlotNum = 1;
+  while (usedSlotNums.has(nextNewSlotNum)) {
+    nextNewSlotNum += 1;
+  }
+
+  const payloadEntries = {};
+  const uploads = [];
+
+  diff.newLocal.forEach(localUri => {
+    let slotKey;
+    let filename;
+    if (freedQueue.length > 0) {
+      const freed = freedQueue.shift();
+      slotKey = freed.slotKey;
+      filename = asString(freed.filename) || `${slotKey}.${ext}`;
+    } else {
+      slotKey = `${kindPrefix}${nextNewSlotNum}`;
+      filename = `${slotKey}.${ext}`;
+      usedSlotNums.add(nextNewSlotNum);
+      while (usedSlotNums.has(nextNewSlotNum)) {
+        nextNewSlotNum += 1;
+      }
+    }
+    payloadEntries[slotKey] = filename;
+    uploads.push({
+      localPath: localUri,
+      storagePath: buildStoragePath(filename),
+    });
+  });
+
+  freedQueue.forEach(freed => {
+    if (freed?.slotKey) {
+      payloadEntries[freed.slotKey] = null;
+    }
+  });
+
+  return { payloadEntries, uploads };
+};
+
+const handleRepickSubmission = async ({
+  session,
+  userId,
+  ward,
+  participants,
+  maleCount,
+  femaleCount,
+  otherCount,
+  ageBelow18,
+  remark,
+  topics,
+  location,
+  repickContext,
+}) => {
+  const ctxUserId = asString(repickContext.userId) || userId;
+  const taskKey = asString(repickContext.taskKey);
+  const taskCount = asString(repickContext.taskCount);
+  const datePath = repickContext.datePath || {};
+  const year = asString(datePath.year);
+  const month = asString(datePath.month);
+  const isoDate = asString(datePath.isoDate);
+
+  if (!taskKey || !taskCount || !year || !month || !isoDate) {
+    throw new Error('Cannot re-pick task: missing task path info.');
+  }
+
+  const targetPath = `IECData/IECTasks/${ctxUserId}/${year}/${month}/${isoDate}/${taskKey}/${taskCount}`;
+  const cityName = asString(CITY?.cityName || getSessionCity(session));
+  const { currentDateTime } = getCurrentDateParts();
+
+  // Location — try fresh capture; fall back to provided location.
+  let finalLatLng = '';
+  let finalAddress = asString(location?.address) || STATIC_LOCATION.address;
+  if (
+    isValidCoordinate(location?.latitude) &&
+    isValidCoordinate(location?.longitude)
+  ) {
+    finalLatLng = formatLocationPair({
+      latitude: location.latitude,
+      longitude: location.longitude,
+    });
+  }
+  if (!finalLatLng) {
+    try {
+      const locResult = await getUserCurrentLocation();
+      if (
+        locResult.success &&
+        locResult.location?.latitude &&
+        locResult.location?.longitude
+      ) {
+        finalLatLng = formatLocationPair(locResult.location);
+        finalAddress = locResult.location?.address || finalAddress;
+      }
+    } catch (e) {}
+  }
+
+  const finalLocation = {
+    latitude: finalLatLng ? Number(String(finalLatLng).split(',')[0]) : 0,
+    longitude: finalLatLng ? Number(String(finalLatLng).split(',')[1]) : 0,
+    address: finalAddress,
+  };
+  if (!isValidLocation(finalLocation)) {
+    throw new Error(
+      'Location capture failed. Please enable GPS and try again before submitting.',
+    );
+  }
+
+  const payload = {
+    _at: currentDateTime,
+    status: '1',
+    latLng: finalLatLng,
+    address: finalAddress,
+    remark: asString(remark),
+    noOfParticipants: asString(participants),
+  };
+
+  // Optional text fields — cleared field is removed, filled field is written.
+  const optionalFields = {
+    wardNo: ward,
+    maleCount,
+    femaleCount,
+    otherCount,
+    ageBelow18,
+  };
+  Object.entries(optionalFields).forEach(([key, value]) => {
+    const v = asString(value);
+    payload[key] = v !== '' ? v : null;
+  });
+
+  // Topics — always overwrite from current selection; null if empty.
+  const normalizedTopics =
+    topics && typeof topics === 'object' && !Array.isArray(topics)
+      ? Object.entries(topics).reduce((acc, [id, name]) => {
+          const k = asString(id);
+          const v = asString(name);
+          if (k && v) {
+            acc[k] = v;
+          }
+          return acc;
+        }, {})
+      : {};
+  payload.topics =
+    Object.keys(normalizedTopics).length > 0 ? normalizedTopics : null;
+
+  // Media allocation — reuse freed slot's storagePath (same-path replace) first.
+  const buildImagePath = fileName =>
+    buildPendingMediaPath({
+      userId: ctxUserId,
+      cityName,
+      year,
+      month,
+      currentDate: isoDate,
+      taskKey: `${taskKey}/${taskCount}`,
+      fileName,
+    });
+  const buildVideoPath = fileName =>
+    `${cityName ? `${cityName}/` : ''}IECData/IECTasksVideos/${ctxUserId}/${year}/${month}/${isoDate}/${taskKey}/${taskCount}/${fileName}`;
+
+  const imageDiff = repickContext.images || { unchanged: [], newLocal: [], freed: [] };
+  const videoDiff = repickContext.videos || { unchanged: [], newLocal: [], freed: [] };
+  const imageAlloc = allocateMediaSlots({
+    diff: imageDiff,
+    kindPrefix: 'image',
+    ext: 'jpg',
+    buildStoragePath: buildImagePath,
+  });
+  const videoAlloc = allocateMediaSlots({
+    diff: videoDiff,
+    kindPrefix: 'video',
+    ext: 'mp4',
+    buildStoragePath: buildVideoPath,
+  });
+  Object.assign(payload, imageAlloc.payloadEntries, videoAlloc.payloadEntries);
+
+  const { getDatabase, ref, update, set } = require('@react-native-firebase/database');
+  const app = await initializeFirebaseApp();
+  const db = getDatabase(app, FIREBASE_CONFIG?.databaseURL);
+
+  // Sequential numeric key (1, 2, 3, ...) — no random push ids.
+  const existingHistory = await getData(`${targetPath}/approvalHistory`);
+  let nextHistoryKey = 1;
+  if (existingHistory && typeof existingHistory === 'object') {
+    const numericKeys = Object.keys(existingHistory)
+      .map(k => parseInt(k, 10))
+      .filter(n => Number.isFinite(n) && n > 0);
+    if (numericKeys.length > 0) {
+      nextHistoryKey = Math.max(...numericKeys) + 1;
+    }
+  }
+
+  // Write the main fields (partial update — untouched keys like notApprovedRemark
+  // remain intact).
+  await update(ref(db, targetPath), payload);
+
+  // Write the new approvalHistory entry as its own child — avoids any
+  // slash-path ambiguity and won't clobber sibling entries.
+  await set(
+    ref(db, `${targetPath}/approvalHistory/${nextHistoryKey}`),
+    {
+      status: 'resubmitted',
+      at: currentDateTime,
+      by: userId,
+    },
+  );
+
+  const taskRef = targetPath;
+  await Promise.all(
+    imageAlloc.uploads.map(async ({ localPath, storagePath }) => {
+      await enqueuePendingMediaUpload({
+        localPath,
+        storagePath,
+        contentType: 'image/jpeg',
+        taskRef,
+      });
+    }),
+  );
+  await Promise.all(
+    videoAlloc.uploads.map(async ({ localPath, storagePath }) => {
+      await enqueuePendingMediaUpload({
+        localPath,
+        storagePath,
+        contentType: 'video/mp4',
+        taskRef,
+      });
+    }),
+  );
+
+  if (imageAlloc.uploads.length > 0 || videoAlloc.uploads.length > 0) {
+    flushPendingMediaUploads().catch(() => {});
+  }
+
+  return {
+    ok: true,
+    taskRef,
+    uploadStoragePaths: [
+      ...imageAlloc.uploads.map(u => u.storagePath),
+      ...videoAlloc.uploads.map(u => u.storagePath),
+    ],
+    repick: true,
+  };
+};
+
 export const saveTaskSubmission = async ({
   mode,
   selectedTask,
@@ -279,6 +536,7 @@ export const saveTaskSubmission = async ({
   images,
   videos,
   location,
+  repickContext = null,
 }) => {
   const session = await loadLoginSession();
   const userId = getSessionUserId(session);
@@ -289,6 +547,23 @@ export const saveTaskSubmission = async ({
 
   if (!selectedTask?.title) {
     throw new Error('Task is required.');
+  }
+
+  if (mode === 'repick' && repickContext) {
+    return handleRepickSubmission({
+      session,
+      userId,
+      ward,
+      participants,
+      maleCount,
+      femaleCount,
+      otherCount,
+      ageBelow18,
+      remark,
+      topics,
+      location,
+      repickContext,
+    });
   }
 
   const taskChoice = selectedTask ? { ...selectedTask } : selectedTask;
