@@ -231,6 +231,39 @@ const buildTaskType = (task, fallbackType) => {
   );
 };
 
+// Resolve the rejection remark for a task. NEW FLOW (from 23 Jul 2026): the
+// portal writes EVERY manager rejection into approvalHistory (status
+// 'not_approved' + remark), so the remark is read from the newest
+// not_approved history entry first. Old records (history starting from a
+// resubmit, or no history at all) fall back to the direct notApprovedRemark
+// field — they keep displaying exactly as before.
+const resolveNotApprovedRemark = item => {
+  const history = item?.approvalHistory;
+  if (history && typeof history === 'object') {
+    const ranked = Object.keys(history)
+      .map(k => ({ num: parseInt(k, 10), entry: history[k] }))
+      .filter(x => x.entry && typeof x.entry === 'object')
+      .sort((a, b) => (b.num || 0) - (a.num || 0));
+    for (const { entry } of ranked) {
+      const status = String(entry?.status || entry?.action || '')
+        .toLowerCase()
+        .trim();
+      if (status === 'not_approved' || status === 'notapproved') {
+        const remark = getFirstText(entry?.remark);
+        if (remark) {
+          return remark;
+        }
+        break; // newest rejection carries no remark — use the direct-field fallback
+      }
+      if (status === 'approved') {
+        break; // an approval is newer than any rejection — no active remark
+      }
+      // 'resubmitted' — keep walking back to the rejection that caused it
+    }
+  }
+  return getFirstText(item?.notApprovedRemark);
+};
+
 const resolveTaskStatus = task => {
   // approvalHistory (if present) is the source of truth: the LATEST entry's
   // status decides current UI status. This way a user re-pick immediately
@@ -764,7 +797,7 @@ const flattenTaskNode = (
                 item?.remarks,
                 item?.Remarks,
               ),
-              notApprovedRemark: getFirstText(item?.notApprovedRemark),
+              notApprovedRemark: resolveNotApprovedRemark(item),
               wardNo: getFirstText(item?.wardNo, item?.WardNo, item?.ward),
               noOfParticipants: getFirstText(
                 item?.noOfParticipants,
