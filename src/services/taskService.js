@@ -387,8 +387,14 @@ const handleRepickSubmission = async ({
     );
   }
 
+  // NOTE: `_at` is deliberately NOT written here. It is set once, on the FIRST
+  // submission (see buildTaskPayload), and from then on it means "the original
+  // pick / first submission time" — the portal shows it as the task's actual
+  // pick date & time. Overwriting it on every re-pick destroyed that value with
+  // no copy kept anywhere. The re-submission timestamp is recorded on the
+  // `resubmitted` approvalHistory entry below (`at`), which is where every
+  // reader already looks for it.
   const payload = {
-    _at: currentDateTime,
     status: '1',
     latLng: finalLatLng,
     address: finalAddress,
