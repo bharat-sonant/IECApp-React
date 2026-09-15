@@ -115,14 +115,25 @@ class LocationForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID,
-                buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+        // Android 12+ rejects foreground starts that happen while the app is in
+        // the background; letting that exception escape kills the whole process.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+                )
+            } else {
+                startForeground(NOTIF_ID, buildNotification())
+            }
+        } catch (error: Exception) {
+            android.util.Log.w(
+                "LocationForegroundService",
+                "startForeground rejected: ${error.message}",
             )
-        } else {
-            startForeground(NOTIF_ID, buildNotification())
+            stopSelf()
+            return START_NOT_STICKY
         }
         startLocationUpdates(highAccuracy = true)
         handler.postDelayed(minuteTick, snapshotIntervalMs)

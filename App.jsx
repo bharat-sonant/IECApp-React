@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { AppState, BackHandler, StatusBar, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, BackHandler, StatusBar, StyleSheet, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -23,8 +23,32 @@ import {
   getAppStateSuppressionRemainingMs,
   isAppStateSuppressed,
 } from './src/services/appStateGuard';
+import ErrorBoundary from './src/components/ErrorBoundary';
+import {
+  ERROR_CATEGORY,
+  flushPendingErrorLogs,
+  logError,
+} from './src/services/errorLogService';
+import {
+  markBundleBootSuccessful,
+  reportBundleRollback,
+} from './src/services/otaService';
 
 const Stack = createNativeStackNavigator();
+
+/**
+ * Firebase Realtime Database calls have no timeout of their own. On a device
+ * that cannot reach the database the version check never settles, so without
+ * this cap the app would sit on an empty screen forever.
+ */
+const VERSION_CHECK_TIMEOUT_MS = 8000;
+
+/**
+ * How long the bundle has to stay alive before we tell the native guard this
+ * boot was a good one. If the app dies before that, the next launch falls back
+ * to the bundle shipped inside the APK.
+ */
+const BOOT_CONFIRMATION_DELAY_MS = 2500;
 
 const VersionGate = ({ onReady }) => {
   const { showAlert, dismissAlert } = useAppFeedback();
@@ -38,9 +62,27 @@ const VersionGate = ({ onReady }) => {
       setIsCheckingVersion(true);
       try {
         await initializeFirebaseApp();
-        const result = await validateAppVersion();
+
+        const result = await Promise.race([
+          validateAppVersion(),
+          new Promise(resolve =>
+            setTimeout(
+              () => resolve({ ok: true, timedOut: true }),
+              VERSION_CHECK_TIMEOUT_MS,
+            ),
+          ),
+        ]);
+
         if (!isMounted) {
           return;
+        }
+
+        if (result.timedOut) {
+          logError(
+            ERROR_CATEGORY.VersionCheck,
+            new Error('Version check timed out'),
+            { timeoutMs: VERSION_CHECK_TIMEOUT_MS, reason },
+          );
         }
 
         if (result.ok) {
@@ -70,6 +112,12 @@ const VersionGate = ({ onReady }) => {
           ],
         });
       } catch (error) {
+        // A failing version check must never strand the user on a blank
+        // screen — report it and let the app carry on to the login flow.
+        logError(ERROR_CATEGORY.Startup, error, { step: 'versionGate', reason });
+        if (isMounted) {
+          onReady?.();
+        }
       } finally {
         if (isMounted) {
           setIsCheckingVersion(false);
@@ -85,7 +133,7 @@ const VersionGate = ({ onReady }) => {
   }, [dismissAlert, onReady, showAlert]);
 
   return (
-    <View pointerEvents="none">
+    <View style={styles.gate}>
       <CommonLoader
         visible={isCheckingVersion}
         message="Checking app version..."
@@ -98,6 +146,24 @@ export default function App() {
   const [isVersionReady, setIsVersionReady] = useState(false);
   const navigationRef = useRef(null);
   const routeNameRef = useRef('');
+
+  const handleVersionReady = useCallback(() => {
+    setIsVersionReady(true);
+  }, []);
+
+  useEffect(() => {
+    // Confirm to the native guard that this JS bundle boots, and push out any
+    // startup errors that could not be reported on an earlier launch.
+    const bootTimer = setTimeout(() => {
+      markBundleBootSuccessful();
+    }, BOOT_CONFIRMATION_DELAY_MS);
+
+    reportBundleRollback();
+
+    return () => {
+      clearTimeout(bootTimer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isVersionReady) {
@@ -115,8 +181,13 @@ export default function App() {
           validateAppVersion(),
           flushPendingMediaUploads(),
           ensureSharedMediaCleanup(),
+          flushPendingErrorLogs(),
         ]);
       } catch (error) {
+        logError(ERROR_CATEGORY.Startup, error, {
+          step: 'appStateWork',
+          reason,
+        });
       }
     };
 
@@ -167,61 +238,72 @@ export default function App() {
   }, [isVersionReady]);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <AppFeedbackProvider>
-          <LocationProvider>
-            <StatusBar
-              barStyle="light-content"
-              backgroundColor={appTheme.colors.brand.primaryDark}
-            />
-            {!isVersionReady ? (
-              <VersionGate
-                onReady={() => {
-                  setIsVersionReady(true);
-                }}
+    <ErrorBoundary screenName="App">
+      <GestureHandlerRootView style={styles.root}>
+        <SafeAreaProvider>
+          <AppFeedbackProvider>
+            <LocationProvider>
+              <StatusBar
+                barStyle="light-content"
+                backgroundColor={appTheme.colors.brand.primaryDark}
               />
-            ) : (
-              <NavigationContainer
-                ref={navigationRef}
-                onReady={() => {
-                  const currentRoute =
-                    navigationRef.current?.getCurrentRoute?.()?.name ?? '';
-                  routeNameRef.current = currentRoute;
-                }}
-                onStateChange={() => {
-                  const currentRoute =
-                    navigationRef.current?.getCurrentRoute?.()?.name ?? '';
-                  if (currentRoute && routeNameRef.current !== currentRoute) {
+              {!isVersionReady ? (
+                <VersionGate onReady={handleVersionReady} />
+              ) : (
+                <NavigationContainer
+                  ref={navigationRef}
+                  onReady={() => {
+                    const currentRoute =
+                      navigationRef.current?.getCurrentRoute?.()?.name ?? '';
                     routeNameRef.current = currentRoute;
-                  }
-                }}
-              >
-                <Stack.Navigator
-                  initialRouteName="Launcher"
-                  detachInactiveScreens
-                  screenOptions={{
-                    headerShown: false,
-                    animation: 'none',
-                    freezeOnBlur: true,
-                    contentStyle: {
-                      backgroundColor: appTheme.colors.neutral.background,
-                    },
+                  }}
+                  onStateChange={() => {
+                    const currentRoute =
+                      navigationRef.current?.getCurrentRoute?.()?.name ?? '';
+                    if (currentRoute && routeNameRef.current !== currentRoute) {
+                      routeNameRef.current = currentRoute;
+                    }
                   }}
                 >
-                  <Stack.Screen name="Launcher" component={LauncherScreen} />
-                  <Stack.Screen name="Login" component={LoginScreen} />
-                  <Stack.Screen name="Dashboard" component={DashboardScreen} />
-                  <Stack.Screen
-                    name="TaskMonitoring"
-                    component={TaskMonitoringScreen}
-                  />
-                </Stack.Navigator>
-              </NavigationContainer>
-            )}
-          </LocationProvider>
-        </AppFeedbackProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+                  <Stack.Navigator
+                    initialRouteName="Launcher"
+                    detachInactiveScreens
+                    screenOptions={{
+                      headerShown: false,
+                      animation: 'none',
+                      freezeOnBlur: true,
+                      contentStyle: {
+                        backgroundColor: appTheme.colors.neutral.background,
+                      },
+                    }}
+                  >
+                    <Stack.Screen name="Launcher" component={LauncherScreen} />
+                    <Stack.Screen name="Login" component={LoginScreen} />
+                    <Stack.Screen
+                      name="Dashboard"
+                      component={DashboardScreen}
+                    />
+                    <Stack.Screen
+                      name="TaskMonitoring"
+                      component={TaskMonitoringScreen}
+                    />
+                  </Stack.Navigator>
+                </NavigationContainer>
+              )}
+            </LocationProvider>
+          </AppFeedbackProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </ErrorBoundary>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+  gate: {
+    flex: 1,
+    backgroundColor: appTheme.colors.neutral.background,
+  },
+});

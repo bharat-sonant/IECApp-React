@@ -1,5 +1,6 @@
 package com.iecapp
 
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -13,6 +14,40 @@ class OtaPackageInstaller(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
   override fun getName(): String = "OtaPackageInstaller"
+
+  /**
+   * Tells the native guard that this JS bundle booted fine, so it will not be
+   * rolled back on the next launch.
+   */
+  @ReactMethod
+  fun markBootSuccessful(promise: Promise) {
+    try {
+      OtaBundleGuard.markBootSuccessful(reactApplicationContext.filesDir)
+      promise.resolve(true)
+    } catch (error: Exception) {
+      promise.resolve(false)
+    }
+  }
+
+  /**
+   * Reports whether the previous downloaded bundle had to be discarded, so JS
+   * can log it and allow the update to be offered again.
+   */
+  @ReactMethod
+  fun consumeBootStatus(promise: Promise) {
+    try {
+      val reason = OtaBundleGuard.consumeRollbackReason(reactApplicationContext.filesDir)
+      val result = Arguments.createMap()
+      result.putBoolean("rolledBack", reason != null)
+      result.putString("reason", reason ?: "")
+      promise.resolve(result)
+    } catch (error: Exception) {
+      val result = Arguments.createMap()
+      result.putBoolean("rolledBack", false)
+      result.putString("reason", "")
+      promise.resolve(result)
+    }
+  }
 
   @ReactMethod
   fun install(zipPath: String, promise: Promise) {

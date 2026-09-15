@@ -3,7 +3,6 @@ package com.iecapp
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 
 /**
  * Restarts LocationForegroundService if it gets killed by the system.
@@ -19,11 +18,6 @@ class LocationServiceRestarter : BroadcastReceiver() {
         if (intent.action != ACTION) return
         if (LocationModule.shouldPreventRestartForTracking(context)) return
         if (LocationModule.isPastDailyCutoff()) return
-        val serviceIntent = Intent(context, LocationForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
-        } else {
-            context.startService(serviceIntent)
-        }
+        LocationModule.startLocationService(context)
     }
 }

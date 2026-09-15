@@ -11,6 +11,39 @@ import {
   flushPendingMediaUploads,
 } from './pendingUploadService';
 import { getUserCurrentLocation } from './locationTrackingService';
+import { ERROR_CATEGORY, logError } from './errorLogService';
+
+/**
+ * Secondary bookkeeping writes that run after the task itself is already
+ * committed. They must never keep the "Saving task..." spinner on screen, so
+ * they are capped and their failure is reported instead of thrown.
+ */
+const SECONDARY_WRITE_TIMEOUT_MS = 15000;
+
+const runSecondaryWrite = async (label, writePromiseFactory) => {
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`${label} timed out`)),
+        SECONDARY_WRITE_TIMEOUT_MS,
+      );
+      writePromiseFactory().then(
+        value => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        error => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+    return true;
+  } catch (error) {
+    logError(ERROR_CATEGORY.TaskSubmit, error, { step: label });
+    return false;
+  }
+};
 
 const asString = value =>
   value === null || value === undefined ? '' : String(value).trim();
@@ -696,20 +729,22 @@ export const saveTaskSubmission = async ({
 
   if (taskSourcePath) {
     if (taskSourcePath.includes('IECPriorityTasks')) {
-      try {
-        await updateData(taskSourcePath, {
+      await runSecondaryWrite('markPriorityTaskDone', () =>
+        updateData(taskSourcePath, {
           status: '1',
-        });
-      } catch (e) {}
+        }),
+      );
     }
   } else if (taskPriority === 'high') {
     // Legacy fallback incase originalPath is missing
     const priorityPath = `IECData/IECPriorityTasks/${userId}/${currentDate}/${taskKey}`;
-    await updateData(priorityPath, {
-      status: '1',
-      task: selectedTask?.title || '',
-      desc: selectedTask?.description || '',
-    });
+    await runSecondaryWrite('markPriorityTaskDoneLegacy', () =>
+      updateData(priorityPath, {
+        status: '1',
+        task: selectedTask?.title || '',
+        desc: selectedTask?.description || '',
+      }),
+    );
   }
 
   // Build full storage paths for upload queue only AFTER transaction provides correct nextTaskCount

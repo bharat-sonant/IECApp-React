@@ -19,6 +19,14 @@ import { useLocation } from '../context/LocationContext';
 import { checkForUpdates } from '../services/otaService';
 import UpdateModal from '../components/UpdateModal/UpdateModal';
 import { ensureSharedMediaCleanup } from '../services/sharedMediaService';
+import { ERROR_CATEGORY, logError } from '../services/errorLogService';
+
+/**
+ * Startup work (media cleanup, the GitHub release check) has no timeout of its
+ * own, so a slow or blocked network could leave the user on the splash screen
+ * forever. This is the hard upper bound before we move on regardless.
+ */
+const STARTUP_WATCHDOG_MS = 12000;
 
 const LauncherScreen = ({ navigation }) => {
   const { width, height } = useWindowDimensions();
@@ -63,6 +71,34 @@ const LauncherScreen = ({ navigation }) => {
     stopTracking();
 
     let isActive = true;
+    let hasNavigated = false;
+    let blockedByUpdate = false;
+
+    const goToNextScreen = async () => {
+      if (!isActive || hasNavigated || blockedByUpdate) {
+        return;
+      }
+      hasNavigated = true;
+
+      let session = null;
+      try {
+        session = await loadLoginSession();
+      } catch {
+        session = null;
+      }
+      if (!isActive) return;
+      navigation.replace(session ? 'Dashboard' : 'Login');
+    };
+
+    const scheduleNavigation = (delay = 2000) => {
+      if (navigateTimerRef.current) {
+        clearTimeout(navigateTimerRef.current);
+      }
+      navigateTimerRef.current = setTimeout(goToNextScreen, delay);
+    };
+
+    // Last line of defence: the splash screen must never become a dead end.
+    const watchdogTimer = setTimeout(goToNextScreen, STARTUP_WATCHDOG_MS);
 
     const runStartup = async () => {
       try {
@@ -75,6 +111,9 @@ const LauncherScreen = ({ navigation }) => {
               onUpdatePress,
               options = {},
             ) => {
+              // The user has to act on the update, so stop the watchdog.
+              blockedByUpdate = true;
+              clearTimeout(watchdogTimer);
               updateActionRef.current = onUpdatePress;
               setOtaModal({
                 visible: true,
@@ -112,11 +151,8 @@ const LauncherScreen = ({ navigation }) => {
             },
             onError: error => {
               hideUpdateModal();
-              navigateTimerRef.current = setTimeout(() => {
-                if (isActive) {
-                  navigation.replace('Login');
-                }
-              }, 1200);
+              blockedByUpdate = false;
+              scheduleNavigation(1200);
             },
           },
           null,
@@ -127,29 +163,10 @@ const LauncherScreen = ({ navigation }) => {
           return;
         }
 
-        navigateTimerRef.current = setTimeout(async () => {
-          if (!isActive) return;
-          let session = null;
-          try {
-            session = await loadLoginSession();
-          } catch {
-            session = null;
-          }
-          if (!isActive) return;
-          navigation.replace(session ? 'Dashboard' : 'Login');
-        }, 2000);
+        scheduleNavigation(2000);
       } catch (error) {
-        navigateTimerRef.current = setTimeout(async () => {
-          if (!isActive) return;
-          let session = null;
-          try {
-            session = await loadLoginSession();
-          } catch {
-            session = null;
-          }
-          if (!isActive) return;
-          navigation.replace(session ? 'Dashboard' : 'Login');
-        }, 2000);
+        logError(ERROR_CATEGORY.Startup, error, { step: 'launcherStartup' });
+        scheduleNavigation(2000);
       }
     };
 
@@ -214,6 +231,7 @@ const LauncherScreen = ({ navigation }) => {
 
     return () => {
       isActive = false;
+      clearTimeout(watchdogTimer);
       if (navigateTimerRef.current) {
         clearTimeout(navigateTimerRef.current);
       }

@@ -16,6 +16,9 @@ import {
 const asString = value =>
   value === null || value === undefined ? '' : String(value).trim();
 
+/** Upper bound for the reverse-geocode lookup; the address is optional. */
+const GEOCODE_TIMEOUT_MS = 8000;
+
 let lastSavedSnapshotSignature = '';
 
 const getDateParts = input => {
@@ -147,13 +150,20 @@ export const getUserCurrentLocation = async () => {
       return { success: false, error: 'No location data' };
     }
 
-    // Geocode address from lat/lng (like old app's Geocoder)
+    // Geocode address from lat/lng (like old app's Geocoder).
+    // Android's Geocoder is a blocking backend call with no timeout of its own,
+    // and the address is optional, so never let it hold up a task submission.
     let address = 'Location not captured';
     try {
-      const locality = await getLocalityFromLatLng(
-        location.latitude,
-        location.longitude,
-      );
+      const locality = await Promise.race([
+        getLocalityFromLatLng(location.latitude, location.longitude),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Geocoder timed out')),
+            GEOCODE_TIMEOUT_MS,
+          ),
+        ),
+      ]);
       if (locality && typeof locality === 'string' && locality.trim()) {
         address = locality.trim();
       }

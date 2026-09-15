@@ -1,4 +1,5 @@
 import { uploadFileToStorage } from '../firebase/firebaseService';
+import { ERROR_CATEGORY, logError } from './errorLogService';
 
 const STORAGE_KEY = '@iec_pending_media_uploads';
 let queueLock = Promise.resolve();
@@ -30,6 +31,7 @@ export const getPendingMediaUploadsCount = async () => {
 };
 
 let inFlightPendingByTaskRef = null;
+let inFlightClaimedIds = null;
 
 const buildCountsFromQueue = queue => {
   const map = new Map();
@@ -44,11 +46,24 @@ const buildCountsFromQueue = queue => {
 };
 
 export const getPendingMediaCountsByTaskRef = async () => {
-  if (inFlightPendingByTaskRef) {
-    return new Map(inFlightPendingByTaskRef);
-  }
   const queue = await readQueue();
-  return buildCountsFromQueue(queue);
+
+  if (!inFlightPendingByTaskRef) {
+    return buildCountsFromQueue(queue);
+  }
+
+  // Items being uploaded right now stay in storage until the flush finishes,
+  // so count those from the in-flight map (it shrinks as uploads succeed) and
+  // the rest — anything queued mid-flush — straight from storage.
+  const counts = buildCountsFromQueue(
+    queue.filter(item => !inFlightClaimedIds?.has(item?.id)),
+  );
+
+  inFlightPendingByTaskRef.forEach((pending, taskRef) => {
+    counts.set(taskRef, (counts.get(taskRef) || 0) + pending);
+  });
+
+  return counts;
 };
 const MAX_IMAGE_UPLOAD_BYTES = 50 * 1024;
 const IMAGE_UPLOAD_DIMENSION = 800;
@@ -235,6 +250,34 @@ export const removePendingMediaUpload = async id => {
 
 const UPLOAD_CONCURRENCY = 2;
 
+/**
+ * Firebase Storage uploads and the image resizer have no timeout of their own.
+ * One stuck file must not stall the whole queue, so every step is capped.
+ */
+const IMAGE_PREPARE_TIMEOUT_MS = 60000;
+const UPLOAD_TIMEOUT_MS = 180000;
+
+/** Number of failed attempts before a stuck item is reported. */
+const REPORT_AFTER_RETRIES = 3;
+
+const withStepTimeout = (promise, timeoutMs, label) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+
 const processQueueItem = async item => {
   const localPath = asString(item?.localPath);
   const storagePath = asString(item?.storagePath);
@@ -249,15 +292,19 @@ const processQueueItem = async item => {
     let cleanupPath = null;
 
     if (contentType.startsWith('image/')) {
-      const prepared = await prepareImageForUpload(localPath);
+      const prepared = await withStepTimeout(
+        prepareImageForUpload(localPath),
+        IMAGE_PREPARE_TIMEOUT_MS,
+        'Image preparation',
+      );
       uploadPath = prepared.path;
       cleanupPath = prepared.cleanupPath;
     }
 
-    const uploadResult = await uploadFileToStorage(
-      storagePath,
-      uploadPath,
-      contentType,
+    const uploadResult = await withStepTimeout(
+      uploadFileToStorage(storagePath, uploadPath, contentType),
+      UPLOAD_TIMEOUT_MS,
+      `Upload of ${storagePath}`,
     );
     if (!uploadResult || uploadResult.success !== true) {
       throw new Error(
@@ -268,29 +315,61 @@ const processQueueItem = async item => {
       await removeQueueItemFile(cleanupPath);
     }
     return { ok: true };
-  } catch {
-    return {
-      ok: false,
-      retryItem: { ...item, retries: Number(item?.retries || 0) + 1 },
-    };
+  } catch (error) {
+    const retries = Number(item?.retries || 0) + 1;
+
+    if (retries >= REPORT_AFTER_RETRIES) {
+      logError(ERROR_CATEGORY.MediaUpload, error, {
+        storagePath,
+        contentType,
+        taskRef: asString(item?.taskRef),
+        retries,
+      });
+    }
+
+    return { ok: false, retryItem: { ...item, retries } };
   }
 };
 
+let isFlushing = false;
+
+/**
+ * Uploads every queued file.
+ *
+ * The queue lock is held only while claiming the work and while writing the
+ * result back — never during the uploads themselves. Holding it across the
+ * network calls made `enqueuePendingMediaUpload` wait behind a slow upload,
+ * which left the "Saving task..." spinner on screen long after the task had
+ * already been written to the database.
+ */
 export const flushPendingMediaUploads = async () => {
-  return withQueueLock(async () => {
-    const queue = await readQueue();
-    if (!queue.length) {
-      inFlightPendingByTaskRef = null;
+  if (isFlushing) {
+    return { processed: 0, succeeded: 0, failed: 0, remaining: 0, skipped: true };
+  }
+  isFlushing = true;
+
+  try {
+    const claimed = await withQueueLock(async () => {
+      const queue = await readQueue();
+      if (!queue.length) {
+        inFlightPendingByTaskRef = null;
+        inFlightClaimedIds = null;
+        return [];
+      }
+
+      inFlightPendingByTaskRef = buildCountsFromQueue(queue);
+      inFlightClaimedIds = new Set(queue.map(item => item?.id).filter(Boolean));
+      return queue;
+    });
+
+    if (!claimed.length) {
       return { processed: 0, succeeded: 0, failed: 0, remaining: 0 };
     }
 
-    const nextQueue = [];
+    const retryItems = [];
     let processed = 0;
     let succeeded = 0;
     let failed = 0;
-
-    // Initialize in-flight pending state (fresh snapshot of queue)
-    inFlightPendingByTaskRef = buildCountsFromQueue(queue);
 
     const decrementInFlight = item => {
       const ref = String(item?.taskRef || '').trim();
@@ -306,8 +385,8 @@ export const flushPendingMediaUploads = async () => {
     };
 
     // Process in concurrent batches of UPLOAD_CONCURRENCY
-    for (let i = 0; i < queue.length; i += UPLOAD_CONCURRENCY) {
-      const batch = queue.slice(i, i + UPLOAD_CONCURRENCY);
+    for (let i = 0; i < claimed.length; i += UPLOAD_CONCURRENCY) {
+      const batch = claimed.slice(i, i + UPLOAD_CONCURRENCY);
       const results = await Promise.all(batch.map(processQueueItem));
 
       for (let idx = 0; idx < results.length; idx += 1) {
@@ -320,26 +399,34 @@ export const flushPendingMediaUploads = async () => {
         } else {
           failed += 1;
           if (result.retryItem) {
-            nextQueue.push(result.retryItem);
+            retryItems.push(result.retryItem);
           } else {
             decrementInFlight(item);
           }
         }
-        const remainingNow = queue.length - processed + nextQueue.length;
-        notifyQueueListeners(remainingNow);
+        notifyQueueListeners(claimed.length - processed + retryItems.length);
       }
     }
 
-    await writeQueue(nextQueue);
-    inFlightPendingByTaskRef = null;
-    notifyQueueListeners(nextQueue.length);
-    return {
-      processed,
-      succeeded,
-      failed,
-      remaining: nextQueue.length,
-    };
-  });
+    // Merge back under the lock so anything enqueued mid-flush survives.
+    const remaining = await withQueueLock(async () => {
+      const latest = await readQueue();
+      const queuedMeanwhile = latest.filter(
+        item => !inFlightClaimedIds?.has(item?.id),
+      );
+      const nextQueue = [...retryItems, ...queuedMeanwhile];
+
+      await writeQueue(nextQueue);
+      inFlightPendingByTaskRef = null;
+      inFlightClaimedIds = null;
+      notifyQueueListeners(nextQueue.length);
+      return nextQueue.length;
+    });
+
+    return { processed, succeeded, failed, remaining };
+  } finally {
+    isFlushing = false;
+  }
 };
 
 export const buildPendingMediaPath = ({

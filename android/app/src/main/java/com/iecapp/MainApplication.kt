@@ -1,7 +1,6 @@
 package com.iecapp
 
 import android.app.Application
-import java.io.File
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -28,15 +27,12 @@ class MainApplication : Application(), ReactApplication {
     )
   }
 
-  private fun resolveJsBundleFilePath(): String? {
-    val directBundle = File(filesDir, "index.android.bundle")
-    if (directBundle.exists()) return directBundle.absolutePath
-
-    val otaBundle = File(filesDir, "ota/index.android.bundle")
-    if (otaBundle.exists()) return otaBundle.absolutePath
-
-    return null
-  }
+  /**
+   * Returns the downloaded OTA bundle only when it passes [OtaBundleGuard]'s
+   * integrity and previous-boot checks; otherwise null, which makes React
+   * Native fall back to the bundle shipped inside the APK.
+   */
+  private fun resolveJsBundleFilePath(): String? = OtaBundleGuard.resolveBundlePath(filesDir)
 
   override fun onCreate() {
     super.onCreate()

@@ -60,6 +60,14 @@ export const getData = async path => {
   }
 };
 
+export const pushData = async (path, data) => {
+  const {getDatabase, ref, push, set} = require('@react-native-firebase/database');
+  const db = getDatabase(await ensureApp(), FIREBASE_CONFIG?.databaseURL);
+  const entryRef = push(ref(db, path));
+  await set(entryRef, data);
+  return entryRef.key;
+};
+
 export const saveData = async (path, data) => {
   const {getDatabase, ref, set} = require('@react-native-firebase/database');
   const db = getDatabase(await ensureApp(), FIREBASE_CONFIG?.databaseURL);

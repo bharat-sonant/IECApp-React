@@ -6,6 +6,7 @@ import android.location.Geocoder
 import android.os.Build
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.util.Locale
@@ -14,6 +15,7 @@ class LocationModule(private val reactContext: ReactApplicationContext)
     : ReactContextBaseJavaModule(reactContext) {
 
     companion object {
+        private const val TAG = "LocationModule"
         private const val RUNTIME_PREFS = "d2d_tracking_runtime"
         private const val KEY_MANUAL_STOP = "manual_stop"
         private const val KEY_AUTO_STOP_DATE = "auto_stop_date"
@@ -31,6 +33,27 @@ class LocationModule(private val reactContext: ReactApplicationContext)
             prefs(context).edit()
                 .remove(KEY_MANUAL_STOP)
                 .apply()
+        }
+
+        /**
+         * Android 12+ throws ForegroundServiceStartNotAllowedException when a
+         * foreground service is started while the app sits in the background.
+         * That exception takes down the whole process, so every start site goes
+         * through here instead of calling startForegroundService directly.
+         */
+        fun startLocationService(context: Context): Boolean {
+            return try {
+                val intent = Intent(context, LocationForegroundService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                true
+            } catch (error: Exception) {
+                Log.w(TAG, "Unable to start location service: ${error.message}")
+                false
+            }
         }
 
         fun markManualStopFlag(context: Context) {
@@ -112,12 +135,7 @@ class LocationModule(private val reactContext: ReactApplicationContext)
     fun startTracking() {
         Companion.clearRuntimeStopFlags(reactContext.applicationContext)
         LocationForegroundService.reactContext = reactContext
-        val intent = Intent(reactContext, LocationForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            reactContext.startForegroundService(intent)
-        } else {
-            reactContext.startService(intent)
-        }
+        Companion.startLocationService(reactContext)
     }
 
     /** Stop foreground service — location tracking ends */

@@ -2,8 +2,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
 import { BackHandler, NativeModules, Platform } from 'react-native';
 import DeviceInfo from 'react-native-device-info';
-import RNRestart from 'react-native-restart';
 import { getData } from '../firebase/dbServices';
+import { restartApp } from './appRestart';
+import { ERROR_CATEGORY, logError } from './errorLogService';
 import {
   ENABLE_JS_BUNDLE_OTA,
   OTA_DB_PATH,
@@ -11,26 +12,88 @@ import {
   OTA_RELEASES_URL,
 } from '../constants/appVersion';
 
-const restartApp = () => {
-  if (RNRestart?.Restart) {
-    RNRestart.Restart();
-    return;
-  }
-
-  if (RNRestart?.restart) {
-    RNRestart.restart();
-    return;
-  }
-
-  BackHandler.exitApp();
-};
-
 const REPO_URL = OTA_RELEASES_URL;
 const LEGACY_BUNDLE_PATH = `${RNFS.DocumentDirectoryPath}/index.android.bundle`;
+const LEGACY_BUNDLE_TMP_PATH = `${LEGACY_BUNDLE_PATH}.tmp`;
 const OTA_PACKAGE_PATH = `${RNFS.DocumentDirectoryPath}/ota-package.zip`;
+const OTA_PACKAGE_TMP_PATH = `${OTA_PACKAGE_PATH}.tmp`;
 const LAST_BUNDLE_ASSET_ID_KEY = 'LAST_BUNDLE_ASSET_ID';
 
+/** A real JS bundle is never this small — anything smaller is a broken download. */
+const MIN_BUNDLE_BYTES = 100000;
+
 const { OtaPackageInstaller } = NativeModules;
+
+/**
+ * Tells the native guard that this bundle started fine. Until this runs, the
+ * next launch will roll the downloaded bundle back and boot the APK bundle.
+ */
+export const markBundleBootSuccessful = async () => {
+  try {
+    await OtaPackageInstaller?.markBootSuccessful?.();
+  } catch (_error) {}
+};
+
+/**
+ * If the native guard discarded a broken bundle on this launch, clear the
+ * stored asset id so the update can be downloaded again, and report it.
+ */
+export const reportBundleRollback = async () => {
+  try {
+    const status = await OtaPackageInstaller?.consumeBootStatus?.();
+
+    if (!status?.rolledBack) {
+      return false;
+    }
+
+    await AsyncStorage.removeItem(LAST_BUNDLE_ASSET_ID_KEY);
+    logError(
+      ERROR_CATEGORY.BundleRollback,
+      new Error('Downloaded JS bundle was rolled back'),
+      { reason: status.reason || '', recoveredWith: 'apk-bundle' },
+    );
+    return true;
+  } catch (_error) {
+    return false;
+  }
+};
+
+/**
+ * Downloads to a temp file first and only swaps it in once it is complete and
+ * big enough. An interrupted download must never be left at the path the app
+ * boots from.
+ */
+const downloadToTempFile = async ({ url, token, tempPath, onProgress }) => {
+  await safeDeletePath(tempPath);
+
+  const result = await RNFS.downloadFile({
+    fromUrl: url,
+    headers: getAuthHeaders(token),
+    toFile: tempPath,
+    background: true,
+    progress: res => {
+      if (!res.contentLength) {
+        return;
+      }
+      const percentage = ((res.bytesWritten / res.contentLength) * 100).toFixed(0);
+      onProgress?.(parseInt(percentage, 10));
+    },
+  }).promise;
+
+  if (result.statusCode !== 200) {
+    throw new Error(`Download failed with status ${result.statusCode}`);
+  }
+
+  const stat = await RNFS.stat(tempPath);
+  if (Number(stat.size) < MIN_BUNDLE_BYTES) {
+    throw new Error(`Downloaded file is incomplete (${stat.size} bytes)`);
+  }
+};
+
+const replaceFile = async (tempPath, finalPath) => {
+  await safeDeletePath(finalPath);
+  await RNFS.moveFile(tempPath, finalPath);
+};
 
 const normalizeVersion = (version = '') =>
   String(version).replace(/^v/i, '').trim();
@@ -199,6 +262,7 @@ export const checkForUpdates = async (
 
     return true;
   } catch (error) {
+    logError(ERROR_CATEGORY.OtaUpdate, error, { step: 'checkForUpdates' });
     onError?.(error);
     return false;
   }
@@ -213,40 +277,31 @@ const downloadOtaPackage = async (
   onError,
 ) => {
   try {
-    await safeDeletePath(OTA_PACKAGE_PATH);
-
-    const downloadOptions = {
-      fromUrl: url,
-      headers: getAuthHeaders(token),
-      toFile: OTA_PACKAGE_PATH,
-      background: true,
-      progress: res => {
-        const percentage = (
-          (res.bytesWritten / res.contentLength) *
-          100
-        ).toFixed(0);
-        onProgress?.(parseInt(percentage, 10));
-      },
-    };
-
-    const result = await RNFS.downloadFile(downloadOptions).promise;
-
-    if (result.statusCode === 200) {
-      if (!OtaPackageInstaller?.install) {
-        throw new Error('OtaPackageInstaller native module is not available');
-      }
-      await OtaPackageInstaller.install(OTA_PACKAGE_PATH);
-      if (assetId) {
-        await AsyncStorage.setItem(LAST_BUNDLE_ASSET_ID_KEY, assetId);
-      }
-      await safeDeletePath(LEGACY_BUNDLE_PATH);
-      await safeDeletePath(OTA_PACKAGE_PATH);
-      onComplete?.('js');
-      setTimeout(() => restartApp(), 1000);
-    } else {
-      throw new Error(`Download failed with status ${result.statusCode}`);
+    if (!OtaPackageInstaller?.install) {
+      throw new Error('OtaPackageInstaller native module is not available');
     }
+
+    await downloadToTempFile({
+      url,
+      token,
+      tempPath: OTA_PACKAGE_TMP_PATH,
+      onProgress,
+    });
+    await replaceFile(OTA_PACKAGE_TMP_PATH, OTA_PACKAGE_PATH);
+
+    await OtaPackageInstaller.install(OTA_PACKAGE_PATH);
+    if (assetId) {
+      await AsyncStorage.setItem(LAST_BUNDLE_ASSET_ID_KEY, assetId);
+    }
+    await safeDeletePath(LEGACY_BUNDLE_PATH);
+    await safeDeletePath(OTA_PACKAGE_PATH);
+    onComplete?.('js');
+    setTimeout(() => restartApp(), 1000);
   } catch (error) {
+    // Never leave a half written package or bundle behind — the app boots from these.
+    await safeDeletePath(OTA_PACKAGE_TMP_PATH);
+    await safeDeletePath(OTA_PACKAGE_PATH);
+    logError(ERROR_CATEGORY.OtaUpdate, error, { step: 'downloadOtaPackage' });
     onError?.(error);
   }
 };
@@ -262,32 +317,26 @@ const downloadLegacyBundle = async (
   try {
     await safeDeletePath(OTA_PACKAGE_PATH);
 
-    const downloadOptions = {
-      fromUrl: url,
-      headers: getAuthHeaders(token),
-      toFile: LEGACY_BUNDLE_PATH,
-      background: true,
-      progress: res => {
-        const percentage = (
-          (res.bytesWritten / res.contentLength) *
-          100
-        ).toFixed(0);
-        onProgress?.(parseInt(percentage, 10));
-      },
-    };
+    // Download to a temp path, then swap it in. Writing straight to
+    // LEGACY_BUNDLE_PATH leaves a truncated bundle there if the download
+    // breaks, and the app boots from that file on the next launch.
+    await downloadToTempFile({
+      url,
+      token,
+      tempPath: LEGACY_BUNDLE_TMP_PATH,
+      onProgress,
+    });
+    await replaceFile(LEGACY_BUNDLE_TMP_PATH, LEGACY_BUNDLE_PATH);
 
-    const result = await RNFS.downloadFile(downloadOptions).promise;
-
-    if (result.statusCode === 200) {
-      if (assetId) {
-        await AsyncStorage.setItem(LAST_BUNDLE_ASSET_ID_KEY, assetId);
-      }
-      onComplete?.('js');
-      setTimeout(() => restartApp(), 1000);
-    } else {
-      throw new Error(`Download failed with status ${result.statusCode}`);
+    if (assetId) {
+      await AsyncStorage.setItem(LAST_BUNDLE_ASSET_ID_KEY, assetId);
     }
+    onComplete?.('js');
+    setTimeout(() => restartApp(), 1000);
   } catch (error) {
+    await safeDeletePath(LEGACY_BUNDLE_TMP_PATH);
+    await safeDeletePath(LEGACY_BUNDLE_PATH);
+    logError(ERROR_CATEGORY.OtaUpdate, error, { step: 'downloadLegacyBundle' });
     onError?.(error);
   }
 };
