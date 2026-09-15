@@ -38,8 +38,8 @@ export const Jaipur_Office = {
 };
 
 // Toggle the active Firebase config by commenting/uncommenting one line below.
-// export const FIREBASE_CONFIG = DEVTEST_CONFIG;
-export const FIREBASE_CONFIG = Jaipur_Office;
+export const FIREBASE_CONFIG = DEVTEST_CONFIG;
+// export const FIREBASE_CONFIG = Jaipur_Office;
 
 export const CITY = FIREBASE_CONFIG;
 
