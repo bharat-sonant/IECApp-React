@@ -61,10 +61,13 @@ const VersionGate = ({ onReady }) => {
     const checkVersion = async (reason = 'mount') => {
       setIsCheckingVersion(true);
       try {
-        await initializeFirebaseApp();
-
+        // The timeout has to cover the Firebase init too — if that call hangs,
+        // racing only the version lookup would still leave the app stuck here.
         const result = await Promise.race([
-          validateAppVersion(),
+          (async () => {
+            await initializeFirebaseApp();
+            return validateAppVersion();
+          })(),
           new Promise(resolve =>
             setTimeout(
               () => resolve({ ok: true, timedOut: true }),

@@ -12,6 +12,7 @@ import {
 } from './pendingUploadService';
 import { getUserCurrentLocation } from './locationTrackingService';
 import { ERROR_CATEGORY, logError } from './errorLogService';
+import { markRejectedTaskResubmitted } from './rejectedTaskService';
 
 /**
  * Secondary bookkeeping writes that run after the task itself is already
@@ -123,6 +124,7 @@ const buildOldTaskPayload = ({
   femaleCount,
   otherCount,
   ageBelow18,
+  isSharedActivity,
   taskChoice,
   topics,
   currentDateTime,
@@ -198,6 +200,13 @@ const buildOldTaskPayload = ({
       payload[key] = v;
     }
   });
+
+  // Shared Activity — several executives ran this same activity together. The
+  // portal groups flagged tasks by date + activity + ward. Key is written only
+  // when ticked, so normal tasks stay unchanged.
+  if (isSharedActivity === true) {
+    payload.isSharedActivity = true;
+  }
 
   // Covered topics saved as { topicId: topicName } (same format as the mapping).
   const normalizedTopics =
@@ -362,6 +371,7 @@ const handleRepickSubmission = async ({
   femaleCount,
   otherCount,
   ageBelow18,
+  isSharedActivity,
   remark,
   topics,
   location,
@@ -448,6 +458,9 @@ const handleRepickSubmission = async ({
     payload[key] = v !== '' ? v : null;
   });
 
+  // Shared Activity — written when ticked, removed when unticked on resubmit.
+  payload.isSharedActivity = isSharedActivity === true ? true : null;
+
   // Topics — always overwrite from current selection; null if empty.
   const normalizedTopics =
     topics && typeof topics === 'object' && !Array.isArray(topics)
@@ -524,6 +537,18 @@ const handleRepickSubmission = async ({
     },
   );
 
+  // Resubmitted — no longer needs a re-pick; the Dashboard shows it as
+  // Completed until the approver acts on it.
+  await runSecondaryWrite('markRejectedTaskResubmitted', () =>
+    markRejectedTaskResubmitted(
+      ctxUserId,
+      isoDate,
+      taskKey,
+      taskCount,
+      currentDateTime,
+    ),
+  );
+
   const taskRef = targetPath;
   await Promise.all(
     imageAlloc.uploads.map(async ({ localPath, storagePath }) => {
@@ -570,6 +595,7 @@ export const saveTaskSubmission = async ({
   femaleCount,
   otherCount,
   ageBelow18,
+  isSharedActivity = false,
   remark,
   topics,
   images,
@@ -598,6 +624,7 @@ export const saveTaskSubmission = async ({
       femaleCount,
       otherCount,
       ageBelow18,
+      isSharedActivity,
       remark,
       topics,
       location,
@@ -647,6 +674,7 @@ export const saveTaskSubmission = async ({
     femaleCount,
     otherCount,
     ageBelow18,
+    isSharedActivity,
     taskChoice,
     topics,
     currentDateTime,

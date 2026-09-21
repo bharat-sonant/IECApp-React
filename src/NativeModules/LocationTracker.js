@@ -25,6 +25,24 @@ export const setTrackingConfig = config => {
 };
 
 /**
+ * Not Approved task alerts (phone notification from the tracking service).
+ * config: { empId, apiKey, appId, projectId, databaseURL }.
+ * Must be called BEFORE startLocationTracking().
+ */
+export const setTaskAlertConfig = config => {
+  if (Platform.OS === 'android' && config && LocationTracker?.setTaskAlertConfig) {
+    LocationTracker.setTaskAlertConfig(config);
+  }
+};
+
+/** Logout — stop task alerts for this executive on this phone. */
+export const clearTaskAlertConfig = () => {
+  if (Platform.OS === 'android' && LocationTracker?.clearTaskAlertConfig) {
+    LocationTracker.clearTaskAlertConfig();
+  }
+};
+
+/**
  * Opens the system battery optimization exemption screen.
  */
 export const requestIgnoreBatteryOptimizations = async () => {
@@ -120,6 +138,21 @@ export const subscribeToMinuteSnapshot = callback => {
     callback(snapshot);
   });
   return () => sub.remove();
+};
+
+/**
+ * Fast one-off location fix for task submit — last known fix first, one fresh
+ * high-accuracy fix only if that is missing/stale. Never waits on the live
+ * tracking stream. Resolves { latitude, longitude, accuracy, speed } or null.
+ */
+export const getCurrentLocation = (timeoutMs = 6000) => {
+  if (Platform.OS !== 'android' || !LocationTracker?.getCurrentLocation) {
+    return Promise.resolve(null);
+  }
+  return Promise.race([
+    LocationTracker.getCurrentLocation().catch(() => null),
+    new Promise(resolve => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
 };
 
 export const getLocalityFromLatLng = async (latitude, longitude) => {

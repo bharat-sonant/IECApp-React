@@ -77,6 +77,14 @@ const alertStyles = {
     buttonColor: appTheme.colors.status.success,
     buttonTextColor: '#FFFFFF',
   },
+  // Gentle nudge about pending work (e.g. tasks to re-pick).
+  reminder: {
+    icon: 'bell-ring-outline',
+    accentColor: appTheme.colors.status.warning,
+    iconBg: 'rgba(199, 125, 0, 0.12)',
+    buttonColor: appTheme.colors.brand.primaryDark,
+    buttonTextColor: '#FFFFFF',
+  },
 };
 
 export const AppFeedbackProvider = ({children}) => {

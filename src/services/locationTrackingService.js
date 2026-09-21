@@ -10,14 +10,15 @@ import {
   getPendingSnapshots,
   clearPendingSnapshots,
   getLocalityFromLatLng,
+  getCurrentLocation as getNativeCurrentLocation,
   isIgnoringBatteryOptimizations as nativeIsIgnoringBatteryOptimizations,
 } from '../NativeModules/LocationTracker';
 
 const asString = value =>
   value === null || value === undefined ? '' : String(value).trim();
 
-/** Upper bound for the reverse-geocode lookup; the address is optional. */
-const GEOCODE_TIMEOUT_MS = 8000;
+/** Upper bound for one reverse-geocode attempt; the address is optional. */
+const GEOCODE_TIMEOUT_MS = 5000;
 
 let lastSavedSnapshotSignature = '';
 
@@ -113,6 +114,24 @@ let cachedLocation = null;
 let lastLocationTime = 0;
 const LOCATION_CACHE_MS = 5000; // Cache location for 5 seconds
 
+/**
+ * Reverse geocode the fix into an address. The timeout is only a safety cap
+ * for a slow/failed geocoder; one quick retry, since the platform Geocoder
+ * occasionally returns empty on the first try. Never throws — '' on failure.
+ */
+const geocodeWithTimeout = async (lat, lng, ms = GEOCODE_TIMEOUT_MS) => {
+  const once = () =>
+    Promise.race([
+      getLocalityFromLatLng(lat, lng)
+        .then(s => String(s || '').trim())
+        .catch(() => ''),
+      new Promise(resolve => setTimeout(() => resolve(''), ms)),
+    ]);
+  const first = await once();
+  if (first) return first;
+  return once(); // retry once before giving up
+};
+
 export const getUserCurrentLocation = async () => {
   try {
     // Return cached location if recent
@@ -121,54 +140,21 @@ export const getUserCurrentLocation = async () => {
       return { success: true, location: cachedLocation };
     }
 
-    // Subscribe briefly to get current location
-    const location = await new Promise((resolve, reject) => {
-      let timeoutId = null;
-      let unsubscribe = null;
-
-      const onLocation = loc => {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (unsubscribe) unsubscribe();
-        resolve(loc);
-      };
-
-      // Set timeout
-      timeoutId = setTimeout(() => {
-        if (unsubscribe) unsubscribe();
-        reject(new Error('Location timeout'));
-      }, 10000);
-
-      // Subscribe to get location
-      unsubscribe = subscribeToLocation(loc => {
-        if (loc?.latitude && loc?.longitude) {
-          onLocation(loc);
-        }
-      });
-    });
+    // Fast native fix (last known first, one fresh fix if stale) — no waiting
+    // on the live tracking stream, which only emits every 10–30 s.
+    const location = await getNativeCurrentLocation();
 
     if (!location?.latitude || !location?.longitude) {
       return { success: false, error: 'No location data' };
     }
 
-    // Geocode address from lat/lng (like old app's Geocoder).
-    // Android's Geocoder is a blocking backend call with no timeout of its own,
-    // and the address is optional, so never let it hold up a task submission.
-    let address = 'Location not captured';
-    try {
-      const locality = await Promise.race([
-        getLocalityFromLatLng(location.latitude, location.longitude),
-        new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Geocoder timed out')),
-            GEOCODE_TIMEOUT_MS,
-          ),
-        ),
-      ]);
-      if (locality && typeof locality === 'string' && locality.trim()) {
-        address = locality.trim();
-      }
-    } catch (geocodeError) {
-    }
+    // Address is best-effort: the fix (latLng) is what matters; a slow or
+    // failed geocode keeps the default text rather than blocking submit.
+    const locality = await geocodeWithTimeout(
+      location.latitude,
+      location.longitude,
+    );
+    const address = locality || 'Location not captured';
 
     const result = {
       latitude: location.latitude,

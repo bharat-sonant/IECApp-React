@@ -3,12 +3,16 @@ package com.iecapp
 import android.content.Intent
 import android.content.Context
 import android.location.Geocoder
+import android.location.Location
 import android.os.Build
 import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import java.util.Locale
 
 class LocationModule(private val reactContext: ReactApplicationContext)
@@ -128,6 +132,26 @@ class LocationModule(private val reactContext: ReactApplicationContext)
         if (config.hasKey("moveFixCount"))
             prefs.putInt("moveFixCount",        config.getInt("moveFixCount"))
         prefs.apply()
+    }
+
+    /**
+     * Who to watch for Not Approved task alerts (see RejectedTaskNotifier):
+     * { empId, apiKey, appId, projectId, databaseURL }. Saved before
+     * startTracking() so the service starts listening with it.
+     */
+    @ReactMethod
+    fun setTaskAlertConfig(config: ReadableMap) {
+        val keys = listOf("empId", "apiKey", "appId", "projectId", "databaseURL")
+        val values = keys.associateWith { key ->
+            if (config.hasKey(key) && !config.isNull(key)) config.getString(key).orEmpty() else ""
+        }
+        RejectedTaskNotifier.saveConfig(reactContext.applicationContext, values)
+    }
+
+    /** Logout — no more task alerts for this executive on this phone. */
+    @ReactMethod
+    fun clearTaskAlertConfig() {
+        RejectedTaskNotifier.clearConfig(reactContext.applicationContext)
     }
 
     /** Start foreground service — location tracking begins */
@@ -279,6 +303,55 @@ class LocationModule(private val reactContext: ReactApplicationContext)
                 .getSharedPreferences("d2d_loc_buffer", 0)
                 .edit().putString("snapshots", "[]").commit()
         } catch (_: Exception) {}
+    }
+
+    private fun locationMap(loc: Location): WritableMap = Arguments.createMap().apply {
+        putDouble("latitude", loc.latitude)
+        putDouble("longitude", loc.longitude)
+        putDouble("accuracy", loc.accuracy.toDouble())
+        putDouble("speed", if (loc.hasSpeed()) loc.speed.toDouble() else 0.0)
+    }
+
+    /**
+     * A location fix as fast as possible — for task submit.
+     *
+     * Tries the OS's last known fix first (instant, and since tracking is running
+     * it is usually only seconds old). Only if that's missing/stale does it ask
+     * for a fresh single fix. Never waits on the live update stream.
+     *
+     * Resolves { latitude, longitude, accuracy, speed } or null if unavailable.
+     */
+    @ReactMethod
+    fun getCurrentLocation(promise: Promise) {
+        try {
+            val client = LocationServices.getFusedLocationProviderClient(reactContext)
+            client.lastLocation
+                .addOnSuccessListener { last ->
+                    val fresh = last != null && System.currentTimeMillis() - last.time <= 60_000
+                    if (fresh) {
+                        promise.resolve(locationMap(last!!))
+                        return@addOnSuccessListener
+                    }
+                    // No recent cache — request one fresh fix.
+                    val cts = CancellationTokenSource()
+                    client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token)
+                        .addOnSuccessListener { cur ->
+                            when {
+                                cur != null -> promise.resolve(locationMap(cur))
+                                last != null -> promise.resolve(locationMap(last)) // stale, still useful
+                                else -> promise.resolve(null)
+                            }
+                        }
+                        .addOnFailureListener {
+                            if (last != null) promise.resolve(locationMap(last)) else promise.resolve(null)
+                        }
+                }
+                .addOnFailureListener { promise.resolve(null) }
+        } catch (_: SecurityException) {
+            promise.resolve(null)
+        } catch (_: Exception) {
+            promise.resolve(null)
+        }
     }
 
     /**

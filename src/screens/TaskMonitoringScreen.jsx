@@ -247,6 +247,27 @@ const TaskMonitoringScreen = ({ navigation }) => {
     return appTheme.colors.status.success;
   };
 
+  // Light tinted chip, same as the Dashboard priority chip.
+  const priorityChipTint = priority => {
+    const p = String(priority).toLowerCase();
+    if (p.includes('high')) {
+      return {
+        backgroundColor: 'rgba(180, 35, 24, 0.10)',
+        borderColor: 'rgba(180, 35, 24, 0.22)',
+      };
+    }
+    if (p.includes('medium')) {
+      return {
+        backgroundColor: 'rgba(199, 125, 0, 0.12)',
+        borderColor: 'rgba(199, 125, 0, 0.22)',
+      };
+    }
+    return {
+      backgroundColor: 'rgba(22, 122, 69, 0.12)',
+      borderColor: 'rgba(22, 122, 69, 0.18)',
+    };
+  };
+
   const handleOpenDatePicker = useCallback(() => {
     setCalendarMonth(parseDate(selectedDate));
     setDatePickerOpen(true);
@@ -293,7 +314,9 @@ const TaskMonitoringScreen = ({ navigation }) => {
           <View style={styles.typeChip}>
             <Text style={styles.typeChipText}>{categoryText}</Text>
           </View>
-          <View style={styles.priorityChip}>
+          <View
+            style={[styles.priorityChip, priorityChipTint(priorityText)]}
+          >
             <MaterialCommunityIcons
               name="flag-variant-outline"
               size={12}
@@ -849,18 +872,33 @@ const TaskMonitoringScreen = ({ navigation }) => {
 
             {selectedTask?.status === 'Not Approved' ? (
               <View style={styles.repickFooter}>
-                <TouchableOpacity
-                  style={styles.repickButton}
-                  activeOpacity={0.85}
-                  onPress={handleRepickTask}
-                >
-                  <MaterialCommunityIcons
-                    name="refresh"
-                    size={16}
-                    color="#FFF"
-                  />
-                  <Text style={styles.repickButtonText}>Re-pick Task</Text>
-                </TouchableOpacity>
+                {selectedTask?.resubmissionRequired === false ? (
+                  // Closed by the approver without sending it back — nothing
+                  // to re-pick; a wrong task is picked again as a new task.
+                  <View style={styles.noResubmitNote}>
+                    <MaterialCommunityIcons
+                      name="information-outline"
+                      size={16}
+                      color={appTheme.colors.neutral.textMuted}
+                    />
+                    <Text style={styles.noResubmitNoteText}>
+                      No resubmission required for this task.
+                    </Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.repickButton}
+                    activeOpacity={0.85}
+                    onPress={handleRepickTask}
+                  >
+                    <MaterialCommunityIcons
+                      name="refresh"
+                      size={16}
+                      color="#FFF"
+                    />
+                    <Text style={styles.repickButtonText}>Re-pick Task</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             ) : null}
           </SafeAreaView>
@@ -1045,61 +1083,66 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: 24,
   },
+  // Card look matches the Dashboard task cards.
   card: {
-    backgroundColor: appTheme.colors.neutral.surface,
-    borderRadius: 18,
-    padding: 14,
+    backgroundColor: '#FFF',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderWidth: 1,
-    borderColor: 'rgba(185, 199, 209, 0.88)',
+    borderColor: 'rgba(185, 199, 209, 0.25)',
     shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 4,
+    shadowOpacity: 0.03,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
   },
   cardPressed: {
     opacity: 0.98,
   },
   listSeparator: {
-    height: 12,
+    height: 10,
   },
   cardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 6,
   },
   typeChip: {
-    backgroundColor: '#F2F5F8',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 9,
+    backgroundColor: 'rgba(185, 199, 209, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   typeChipText: {
-    color: appTheme.colors.neutral.text,
-    fontSize: 12,
+    color: appTheme.colors.brand.primaryDark,
+    fontSize: 11,
     fontWeight: '800',
+    letterSpacing: 0.5,
   },
   priorityChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 3,
     backgroundColor: '#FFF',
     borderWidth: 1,
-    borderColor: 'rgba(185, 199, 209, 0.6)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 9,
+    borderColor: 'rgba(185, 199, 209, 0.3)',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   priorityText: {
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '800',
+    textTransform: 'uppercase',
   },
   cardTitle: {
-    marginTop: 12,
     color: appTheme.colors.neutral.text,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 15,
+    lineHeight: 20,
     fontWeight: '800',
+    marginBottom: 10,
   },
   cardMeta: {
     marginTop: 8,
@@ -1108,7 +1151,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cardFooter: {
-    marginTop: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1118,23 +1160,23 @@ const styles = StyleSheet.create({
   statusChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   statusText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
   },
   mediaChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
   mediaText: {
     color: appTheme.colors.neutral.textMuted,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   uploadingChip: {
@@ -1518,6 +1560,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.3,
+  },
+  noResubmitNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+  },
+  noResubmitNoteText: {
+    color: appTheme.colors.neutral.textMuted,
+    fontSize: 13,
+    fontWeight: '700',
   },
   detailBlockLabelRow: {
     flexDirection: 'row',

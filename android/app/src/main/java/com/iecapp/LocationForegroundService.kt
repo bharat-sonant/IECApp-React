@@ -37,6 +37,8 @@ class LocationForegroundService : Service() {
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var wakeLock: PowerManager.WakeLock? = null
+    // Not Approved task alerts — live for as long as the duty service runs.
+    private lateinit var taskNotifier: RejectedTaskNotifier
 
     // Config
     private var gpsIntervalMs      = DEFAULT_GPS_INTERVAL_MS
@@ -75,6 +77,7 @@ class LocationForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         fusedClient = LocationServices.getFusedLocationProviderClient(this)
+        taskNotifier = RejectedTaskNotifier(applicationContext)
         createNotificationChannel()
         buildLocationCallback()
         val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -137,10 +140,12 @@ class LocationForegroundService : Service() {
         }
         startLocationUpdates(highAccuracy = true)
         handler.postDelayed(minuteTick, snapshotIntervalMs)
+        taskNotifier.start()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        taskNotifier.stop()
         fusedClient.removeLocationUpdates(locationCallback)
         handler.removeCallbacks(minuteTick)
         flushMinuteSnapshot()

@@ -21,6 +21,7 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import appTheme from '../theme/appTheme';
 import CommonLoader from '../components/CommonLoader';
+import RepickTaskDetailModal from '../components/RepickTaskDetailModal';
 import {
   getPendingMediaCountsByTaskRef,
   subscribePendingMediaQueue,
@@ -35,6 +36,13 @@ import { clearSharedMediaFiles } from '../services/sharedMediaService';
 import { clearMediaCache } from '../services/mediaCacheService';
 import { useAppFeedback } from '../components/AppFeedback';
 import { useLocation } from '../context/LocationContext';
+import { useIsFocused } from '@react-navigation/native';
+import {
+  acknowledgeRejectedTasks,
+  backfillRejectedTasks,
+  subscribeRejectedTasks,
+} from '../services/rejectedTaskService';
+import { loadTasks as loadTasksForDate } from '../services/taskMonitoringService';
  import {
    saveDashboardTaskCache,
    readDashboardTaskCache,
@@ -71,6 +79,25 @@ const getFirstText = (...values) => {
   }
 
   return '';
+};
+
+// 'YYYY-MM-DD' -> '17 Sep 2026' (date only, no timezone shift).
+// "YYYY-MM-DD HH:mm" — same format the task records use for their timestamps.
+const getCurrentDateTimeText = () => {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+};
+
+const formatDayOnly = value => {
+  const [year, month, day] = String(value || '').split('-').map(Number);
+  if (!year || !month || !day) {
+    return '';
+  }
+  const monthName = new Date(year, month - 1, 1).toLocaleString('en-US', {
+    month: 'short',
+  });
+  return `${String(day).padStart(2, '0')} ${monthName} ${year}`;
 };
 
 const formatCompletionDate = value => {
@@ -354,6 +381,29 @@ const resolveTaskPriorityChip = task => {
   }
 
   return 'Low';
+};
+
+// Colours of the High / Medium / Low priority chip.
+const getPriorityChipColors = chip => {
+  if (chip === 'High') {
+    return {
+      color: appTheme.colors.status.danger,
+      background: 'rgba(180, 35, 24, 0.10)',
+      border: 'rgba(180, 35, 24, 0.22)',
+    };
+  }
+  if (chip === 'Medium') {
+    return {
+      color: appTheme.colors.status.warning,
+      background: 'rgba(199, 125, 0, 0.12)',
+      border: 'rgba(199, 125, 0, 0.22)',
+    };
+  }
+  return {
+    color: appTheme.colors.status.success,
+    background: 'rgba(22, 122, 69, 0.12)',
+    border: 'rgba(22, 122, 69, 0.18)',
+  };
 };
 
 const resolveCatalogTaskTitle = (catalog, taskKey) => {
@@ -1279,6 +1329,11 @@ const DashboardScreen = ({ navigation }) => {
   const [trackingPermissionGranted, setTrackingPermissionGranted] = useState(false);
   const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
   const [pendingUploadMap, setPendingUploadMap] = useState(new Map());
+  // True while the battery prompt is on screen — the Not Approved reminder
+  // waits for it to close instead of replacing it.
+  const [batteryAlertOpen, setBatteryAlertOpen] = useState(false);
+  // Not Approved tasks the reminder already covered during this visit.
+  const infoShownKeysRef = React.useRef(new Set());
 
   useEffect(() => {
     let isMounted = true;
@@ -1673,6 +1728,10 @@ const DashboardScreen = ({ navigation }) => {
       backgroundPermissionPromptShownRef.current = true;
       batteryPromptCheckedRef.current = true;
       setBatteryPromptChecked(true);
+      // If the Not Approved reminder was already up, this prompt replaces it —
+      // let it show again once the prompt is closed.
+      infoShownKeysRef.current = new Set();
+      setBatteryAlertOpen(true);
       showAlert({
         title: 'Keep Tracking Active',
         message:
@@ -1683,6 +1742,7 @@ const DashboardScreen = ({ navigation }) => {
           {
             text: 'Allow No Restriction',
             onPress: async () => {
+              setBatteryAlertOpen(false);
               try {
                 await AsyncStorage.setItem(`battery_prompt_handled_${loginId}`, 'true');
                 await requestIgnoreBatteryOptimizations();
@@ -1711,6 +1771,230 @@ const DashboardScreen = ({ navigation }) => {
     });
     return () => subscription.remove();
   }, [checkAndShowBatteryPrompt]);
+
+  // ── Not Approved tasks ("To Resubmit") ──
+  // Live list of this executive's rejected tasks. The portal adds an entry on
+  // Not Approved; it is removed once the task is resubmitted or approved.
+  const isFocused = useIsFocused();
+  const [rejectedTasks, setRejectedTasks] = useState([]);
+  const [rejectedLoaded, setRejectedLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!loginId) return undefined;
+    // One-time pick-up of rejections from before this list existed.
+    backfillRejectedTasks(loginId);
+    return subscribeRejectedTasks(loginId, list => {
+      setRejectedTasks(list);
+      setRejectedLoaded(true);
+    });
+  }, [loginId]);
+
+  // Sent back for resubmission — these get a Re-pick card.
+  const resubmitTasks = useMemo(
+    () => rejectedTasks.filter(r => r.resubmissionRequired),
+    [rejectedTasks],
+  );
+
+  // Still waiting for a re-pick (resubmitted ones only await approval).
+  const repickPending = useMemo(
+    () => resubmitTasks.filter(r => !r.resubmitted),
+    [resubmitTasks],
+  );
+
+  // "Do Not Send for Resubmission" — no card, only an info popup (task +
+  // reason) until the executive taps OK.
+  const infoPending = useMemo(
+    () =>
+      rejectedTasks.filter(r => !r.resubmissionRequired && !r.acknowledged),
+    [rejectedTasks],
+  );
+
+  // Re-pick Task — load that date's submission and show the same Task Details
+  // screen as Task Monitoring; its Re-pick button opens the existing re-pick
+  // form (TaskActionModal, mode "repick") right here on the Dashboard.
+  const [repickOpeningKey, setRepickOpeningKey] = useState('');
+  const [repickValues, setRepickValues] = useState(null);
+  const [detailTask, setDetailTask] = useState(null);
+
+  const handleDetailRepick = React.useCallback(task => {
+    setDetailTask(null);
+    setRepickValues(task);
+    setActionModalTask(null);
+    setActionModalMode('repick');
+    setActionModalVisible(true);
+  }, []);
+
+  const handleRepickRejected = React.useCallback(
+    async item => {
+      if (!item || repickOpeningKey) return;
+      setRepickOpeningKey(item.entryKey);
+      try {
+        const dayTasks = await loadTasksForDate(item.date);
+        const task = (dayTasks || []).find(
+          t =>
+            String(t?.taskKey) === String(item.taskId) &&
+            String(t?.taskCount) === String(item.key) &&
+            (!t?.datePath?.isoDate || t.datePath.isoDate === item.date),
+        );
+        if (!task) {
+          showAlert({
+            title: 'Re-pick Task',
+            message: 'This task could not be found. Please try again.',
+            variant: 'error',
+          });
+          return;
+        }
+        // Keep the list entry: a "Do Not Send" task is acknowledged by it.
+        setDetailTask({ ...task, _rejectedEntry: item });
+      } catch {
+        showAlert({
+          title: 'Re-pick Task',
+          message: 'Unable to open the task. Please try again.',
+          variant: 'error',
+        });
+      } finally {
+        setRepickOpeningKey('');
+      }
+    },
+    [repickOpeningKey, showAlert],
+  );
+
+  // "Do Not Send" task viewed — the executive tapped OK on its details:
+  // mark it acknowledged (the card leaves the Dashboard, portal shows "Seen").
+  const handleDetailAcknowledge = React.useCallback(
+    task => {
+      setDetailTask(null);
+      const entry = task?._rejectedEntry;
+      if (!entry) return;
+      acknowledgeRejectedTasks(loginId, [entry], getCurrentDateTimeText()).catch(
+        () => {},
+      );
+    },
+    [loginId],
+  );
+
+  // Every time the executive lands on the Dashboard with Not Approved tasks
+  // waiting (to re-pick, or to view), one common reminder. A new one arriving
+  // live while on the Dashboard reminds again.
+  useEffect(() => {
+    if (!isFocused) {
+      infoShownKeysRef.current = new Set();
+      return;
+    }
+    // Wait while the battery prompt is open; shows right after it closes.
+    if (!rejectedLoaded || batteryAlertOpen) return;
+
+    const waiting = [...repickPending, ...infoPending];
+    const unseen = waiting.filter(
+      r => !infoShownKeysRef.current.has(r.entryKey),
+    );
+    if (!unseen.length) return;
+    waiting.forEach(r => infoShownKeysRef.current.add(r.entryKey));
+
+    // One common message, whatever the count — the tasks themselves are at
+    // the top of the task list, each card with its own button.
+    let action = 'Please open them from your task list to see the details.';
+    if (repickPending.length && infoPending.length) {
+      action =
+        'Please open them from your task list — re-pick and submit again the ones marked "Re-pick Required".';
+    } else if (repickPending.length) {
+      action = 'Please re-pick them from your task list and submit again.';
+    }
+    showAlert({
+      title: 'Reminder',
+      message: `Some of your tasks were not approved.\n\n${action}`,
+      variant: 'reminder',
+      buttons: [{ text: 'OK' }],
+    });
+  }, [
+    isFocused,
+    rejectedLoaded,
+    repickPending,
+    infoPending,
+    batteryAlertOpen,
+    showAlert,
+  ]);
+
+  // Today's date (YYYY-MM-DD) — a re-picked task stays on the Dashboard for
+  // the day it was re-picked, same as tasks added from Add Other / Add KPI.
+  const todayIso = getCurrentDateParts().isoDate;
+
+  // Media still uploading after a re-pick, per rejected entry — matched on the
+  // task path the upload queue uses (…/IECTasks/{user}/…/{date}/{taskId}/{key}).
+  const rejectedPendingUploads = useMemo(() => {
+    const out = new Map();
+    if (!pendingUploadMap.size) return out;
+    resubmitTasks.forEach(r => {
+      const suffix = `/${r.date}/${r.taskId}/${r.key}`;
+      let count = 0;
+      pendingUploadMap.forEach((n, ref) => {
+        const path = String(ref || '');
+        if (
+          path.endsWith(suffix) &&
+          (!loginId || path.includes(`/${loginId}/`))
+        ) {
+          count += Number(n) || 0;
+        }
+      });
+      if (count > 0) out.set(r.entryKey, count);
+    });
+    return out;
+  }, [pendingUploadMap, resubmitTasks, loginId]);
+
+  // Cards on the Dashboard:
+  //  - sent for resubmission: still to re-pick, or re-picked today (as
+  //    Re-Submitted — like other submitted tasks it leaves once approved,
+  //    which deletes the entry, or when the day changes), or media still
+  //    uploading;
+  //  - not sent for resubmission: until the executive has viewed it and
+  //    tapped OK (acknowledged).
+  const visibleRejected = useMemo(
+    () =>
+      rejectedTasks.filter(r =>
+        r.resubmissionRequired
+          ? !r.resubmitted ||
+            String(r.resubmittedAt || '').startsWith(todayIso) ||
+            rejectedPendingUploads.has(r.entryKey)
+          : !r.acknowledged,
+      ),
+    [rejectedTasks, todayIso, rejectedPendingUploads],
+  );
+
+  // Largest pending count seen per upload, so the card can show "Uploading
+  // 1/3" — the rejected entry itself carries no media counts.
+  const [rejectedUploadTotals, setRejectedUploadTotals] = useState(
+    () => new Map(),
+  );
+  useEffect(() => {
+    setRejectedUploadTotals(prev => {
+      const next = new Map();
+      rejectedPendingUploads.forEach((count, k) => {
+        next.set(k, Math.max(prev.get(k) || 0, count));
+      });
+      const same =
+        next.size === prev.size &&
+        [...next].every(([k, v]) => prev.get(k) === v);
+      return same ? prev : next;
+    });
+  }, [rejectedPendingUploads]);
+
+  // Dashboard list: Not Approved tasks first (Re-pick card), then today's
+  // tasks. A task of today that is on the rejected list is not repeated in
+  // today's tasks.
+  const dashboardListData = useMemo(() => {
+    if (!rejectedTasks.length) return tasks;
+    const rejectedSuffixes = rejectedTasks.map(
+      r => `/${r.date}/${r.taskId}/${r.key}`,
+    );
+    const remaining = tasks.filter(t => {
+      const path = String(t?.originalPath || t?.raw?.originalPath || '');
+      return !rejectedSuffixes.some(suffix => path.endsWith(suffix));
+    });
+    return [
+      ...visibleRejected.map(r => ({ ...r, _rejected: true })),
+      ...remaining,
+    ];
+  }, [rejectedTasks, visibleRejected, tasks]);
 
   // Keep task catalog in real-time sync with Firebase (new/edited/removed tasks).
   useEffect(() => {
@@ -1789,7 +2073,246 @@ const DashboardScreen = ({ navigation }) => {
     });
   };
 
+  // Not Approved task card — same card as the task list. Sent for
+  // resubmission: red, "Re-pick Task". Not sent: grey, "View Task" — the
+  // details open view-only and OK removes the card.
+  const renderRejectedTask = item => {
+    if (!item.resubmissionRequired) {
+      return renderViewOnlyRejectedTask(item);
+    }
+    const isOpening = repickOpeningKey === item.entryKey;
+    // Re-picked during this visit — shown like any other picked task.
+    const isRepicked = !!item.resubmitted;
+    // New media from the re-pick still uploading — same chip as other tasks.
+    const pendingUploadCount = rejectedPendingUploads.get(item.entryKey) || 0;
+    const isUploading = pendingUploadCount > 0;
+    const uploadTotal = Math.max(
+      rejectedUploadTotals.get(item.entryKey) || 0,
+      pendingUploadCount,
+    );
+    const uploadedMedia = uploadTotal - pendingUploadCount;
+    let statusMeta = STATUS_META['Not Approved'];
+    if (isUploading) statusMeta = STATUS_META.Pending;
+    else if (isRepicked) statusMeta = STATUS_META.Completed;
+    // Same tag + priority chip as the normal task cards.
+    const taskTag = resolveTaskTag(item);
+    const priorityChip = resolveTaskPriorityChip(item);
+    const chipColors = getPriorityChipColors(priorityChip);
+    return (
+      // Card keeps its red look until the task is approved (entry removed).
+      <View style={[styles.taskCard, styles.rejectedTaskCard]}>
+        <View style={styles.rejectedAccent} />
+        <View style={styles.taskHeader}>
+          <View style={styles.rejectedHeaderLeft}>
+            <View style={styles.typeWrap}>
+              <Text style={styles.taskType}>{taskTag}</Text>
+            </View>
+            <View style={styles.rejectedTag}>
+              <Text style={styles.rejectedTagText}>
+                {isRepicked ? 'Re-Submitted' : 'Re-pick Required'}
+              </Text>
+            </View>
+          </View>
+          <View
+            style={[
+              styles.priorityWrap,
+              {
+                backgroundColor: chipColors.background,
+                borderColor: chipColors.border,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="flag-variant-outline"
+              size={12}
+              color={chipColors.color}
+            />
+            <Text style={[styles.priorityText, { color: chipColors.color }]}>
+              {priorityChip}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.taskTitle} numberOfLines={2}>
+          {item.taskName || 'Task'}
+        </Text>
+
+        <View style={styles.rejectedMetaRow}>
+          <MaterialCommunityIcons
+            name="calendar-blank-outline"
+            size={13}
+            color={appTheme.colors.neutral.textMuted}
+          />
+          <Text style={styles.rejectedDate}>
+            Picked on {formatDayOnly(item.date)}
+          </Text>
+        </View>
+
+        <View style={styles.taskFooter}>
+          <View
+            style={[
+              styles.statusChip,
+              { backgroundColor: statusMeta.backgroundColor },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name={statusMeta.icon}
+              size={14}
+              color={statusMeta.textColor}
+              style={styles.statusIcon}
+            />
+            <Text style={[styles.statusText, { color: statusMeta.textColor }]}>
+              {statusMeta.label}
+            </Text>
+          </View>
+
+          {isUploading ? (
+            <View style={styles.uploadingChip}>
+              <ActivityIndicator
+                size="small"
+                color={appTheme.colors.brand.primary}
+              />
+              <View>
+                <Text style={styles.uploadingChipText}>
+                  Uploading {uploadedMedia}/{uploadTotal}
+                </Text>
+                <View style={styles.uploadProgressTrack}>
+                  <View
+                    style={[
+                      styles.uploadProgressFill,
+                      {
+                        width: `${Math.min(
+                          100,
+                          (uploadedMedia / uploadTotal) * 100,
+                        )}%`,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+          ) : isRepicked ? (
+            !!item.resubmittedAt && (
+              <Text style={styles.taskDateRight}>
+                {formatCompletionDate(item.resubmittedAt)}
+              </Text>
+            )
+          ) : (
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.repickBtn]}
+              onPress={() => handleRepickRejected(item)}
+              activeOpacity={0.8}
+              disabled={!!repickOpeningKey}
+            >
+              {isOpening ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <MaterialCommunityIcons name="restore" size={16} color="#FFF" />
+              )}
+              <Text style={styles.actionBtnText}>Re-pick Task</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  // Not Approved, not sent for resubmission — info only, until viewed.
+  const renderViewOnlyRejectedTask = item => {
+    const isOpening = repickOpeningKey === item.entryKey;
+    const taskTag = resolveTaskTag(item);
+    const priorityChip = resolveTaskPriorityChip(item);
+    const chipColors = getPriorityChipColors(priorityChip);
+    const statusMeta = STATUS_META['Not Approved'];
+    return (
+      <View style={[styles.taskCard, styles.viewOnlyTaskCard]}>
+        <View style={[styles.rejectedAccent, styles.viewOnlyAccent]} />
+        <View style={styles.taskHeader}>
+          <View style={styles.rejectedHeaderLeft}>
+            <View style={styles.typeWrap}>
+              <Text style={styles.taskType}>{taskTag}</Text>
+            </View>
+            <View style={[styles.rejectedTag, styles.viewOnlyTag]}>
+              <Text style={[styles.rejectedTagText, styles.viewOnlyTagText]}>
+                No Resubmission
+              </Text>
+            </View>
+          </View>
+          <View
+            style={[
+              styles.priorityWrap,
+              {
+                backgroundColor: chipColors.background,
+                borderColor: chipColors.border,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="flag-variant-outline"
+              size={12}
+              color={chipColors.color}
+            />
+            <Text style={[styles.priorityText, { color: chipColors.color }]}>
+              {priorityChip}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.taskTitle} numberOfLines={2}>
+          {item.taskName || 'Task'}
+        </Text>
+
+        <View style={styles.rejectedMetaRow}>
+          <MaterialCommunityIcons
+            name="calendar-blank-outline"
+            size={13}
+            color={appTheme.colors.neutral.textMuted}
+          />
+          <Text style={styles.rejectedDate}>
+            Picked on {formatDayOnly(item.date)}
+          </Text>
+        </View>
+
+        <View style={styles.taskFooter}>
+          <View
+            style={[
+              styles.statusChip,
+              { backgroundColor: statusMeta.backgroundColor },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name={statusMeta.icon}
+              size={14}
+              color={statusMeta.textColor}
+              style={styles.statusIcon}
+            />
+            <Text style={[styles.statusText, { color: statusMeta.textColor }]}>
+              {statusMeta.label}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={() => handleRepickRejected(item)}
+            activeOpacity={0.8}
+            disabled={!!repickOpeningKey}
+          >
+            {isOpening ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <MaterialCommunityIcons name="eye-outline" size={16} color="#FFF" />
+            )}
+            <Text style={styles.actionBtnText}>View Task</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
   const renderTask = ({ item }) => {
+    if (item?._rejected) {
+      return renderRejectedTask(item);
+    }
     const taskRef = String(
       item?.originalPath || item?.raw?.originalPath || '',
     ).trim();
@@ -1984,9 +2507,11 @@ const DashboardScreen = ({ navigation }) => {
         {/* SCROLLING LIST AREA */}
         <View style={styles.listContainer}>
           <FlatList
-            data={tasks}
+            data={dashboardListData}
             keyExtractor={item =>
-              String(item.listKey || item.originalPath || item.id)
+              item?._rejected
+                ? `rejected_${item.entryKey}`
+                : String(item.listKey || item.originalPath || item.id)
             }
             showsVerticalScrollIndicator={false}
             contentContainerStyle={[
@@ -2184,16 +2709,32 @@ const DashboardScreen = ({ navigation }) => {
         </Pressable>
       </Modal>
 
+      {/* Task Details (same as Task Monitoring) for a Not Approved task */}
+      <RepickTaskDetailModal
+        task={detailTask}
+        onClose={() => setDetailTask(null)}
+        onRepick={handleDetailRepick}
+        // Not sent for resubmission: view only, leave through OK.
+        acknowledgeOnly={
+          !!detailTask?._rejectedEntry &&
+          !detailTask._rejectedEntry.resubmissionRequired
+        }
+        onAcknowledge={handleDetailAcknowledge}
+      />
 
       {/* Unified Task Action Modal */}
       {actionModalVisible && TaskActionModal ? (
         <TaskActionModal
           visible={actionModalVisible}
-          onClose={() => setActionModalVisible(false)}
+          onClose={() => {
+            setActionModalVisible(false);
+            setRepickValues(null);
+          }}
           onSaved={() => setTasksReloadToken(token => token + 1)}
           mode={actionModalMode}
           taskOptions={tasks}
           initialTask={actionModalTask}
+          initialValues={actionModalMode === 'repick' ? repickValues : undefined}
         />
       ) : null}
     </SafeAreaView>
@@ -2357,9 +2898,10 @@ const styles = StyleSheet.create({
   // --- Task Card ---
   taskCard: {
     backgroundColor: '#FFF',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 14,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: 'rgba(185, 199, 209, 0.25)',
     shadowColor: '#000',
@@ -2371,13 +2913,13 @@ const styles = StyleSheet.create({
   taskHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
     justifyContent: 'space-between',
   },
   typeWrap: {
     backgroundColor: 'rgba(185, 199, 209, 0.15)',
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingVertical: 3,
     borderRadius: 6,
   },
   taskType: {
@@ -2402,11 +2944,11 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   taskTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
     color: appTheme.colors.neutral.text,
-    lineHeight: 22,
-    marginBottom: 16,
+    lineHeight: 20,
+    marginBottom: 10,
   },
   taskDate: {
     marginTop: -8,
@@ -2445,7 +2987,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingVertical: 4,
     borderRadius: 8,
   },
   statusText: {
@@ -2456,15 +2998,77 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: appTheme.colors.brand.primaryDark,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
     gap: 6,
   },
   actionBtnText: {
     color: '#FFF',
     fontSize: 12,
     fontWeight: '800',
+  },
+  // Not Approved card in the task list
+  rejectedTaskCard: {
+    borderColor: 'rgba(180, 35, 24, 0.22)',
+    paddingLeft: 18,
+    overflow: 'hidden',
+  },
+  rejectedAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 5,
+    backgroundColor: appTheme.colors.status.danger,
+  },
+  rejectedHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
+  },
+  rejectedTag: {
+    backgroundColor: 'rgba(180, 35, 24, 0.08)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  rejectedTagText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: appTheme.colors.status.danger,
+    letterSpacing: 0.3,
+  },
+  rejectedMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: -6,
+    marginBottom: 8,
+  },
+  // Not Approved without resubmission — grey: info only, nothing to fix.
+  viewOnlyTaskCard: {
+    borderColor: 'rgba(100, 116, 139, 0.28)',
+    paddingLeft: 18,
+    overflow: 'hidden',
+  },
+  viewOnlyAccent: {
+    backgroundColor: '#94A3B8',
+  },
+  viewOnlyTag: {
+    backgroundColor: 'rgba(100, 116, 139, 0.12)',
+  },
+  viewOnlyTagText: {
+    color: '#475569',
+  },
+  rejectedDate: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: appTheme.colors.neutral.textMuted,
+  },
+  repickBtn: {
+    backgroundColor: appTheme.colors.status.danger,
   },
   uploadingChip: {
     flexDirection: 'row',

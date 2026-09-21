@@ -544,6 +544,7 @@ const TaskActionModal = ({
   const [femaleCount, setFemaleCount] = useState('');
   const [otherCount, setOtherCount] = useState('');
   const [ageBelow18, setAgeBelow18] = useState('');
+  const [isSharedActivity, setIsSharedActivity] = useState(false);
   const [remark, setRemark] = useState('');
   const [selectedTopics, setSelectedTopics] = useState({});
   const [fieldErrors, setFieldErrors] = useState({});
@@ -604,6 +605,7 @@ const TaskActionModal = ({
       setFemaleCount('');
       setOtherCount('');
       setAgeBelow18('');
+      setIsSharedActivity(false);
       setRemark('');
       setImages([]);
       setVideos([]);
@@ -1331,6 +1333,7 @@ const TaskActionModal = ({
     setFemaleCount(String(iv.femaleCount || '').trim());
     setOtherCount(String(iv.otherCount || '').trim());
     setAgeBelow18(String(iv.ageBelow18 || '').trim());
+    setIsSharedActivity(iv.isSharedActivity === true);
     setRemark(String(iv.remark || '').trim());
     // Firebase auto-converts sparse numeric-keyed objects (e.g. {2:.., 4:.., 5:..})
     // into arrays on read. Normalize either shape into a plain {id: name} map,
@@ -1754,6 +1757,7 @@ const TaskActionModal = ({
         femaleCount: femaleCount.trim() === '' ? '' : String(toInt(femaleCount)),
         otherCount: otherCount.trim() === '' ? '' : String(toInt(otherCount)),
         ageBelow18: ageBelow18.trim() === '' ? '' : String(toInt(ageBelow18)),
+        isSharedActivity,
         remark: remark.trim(),
         topics: selectedTopics,
         images,
@@ -1776,6 +1780,7 @@ const TaskActionModal = ({
             femaleCount: femaleCount.trim(),
             otherCount: otherCount.trim(),
             ageBelow18: ageBelow18.trim(),
+            isSharedActivity,
             topics: { ...selectedTopics },
           },
         });
@@ -2294,6 +2299,45 @@ const TaskActionModal = ({
                         </View>
                       </View>
                     </View>
+
+                    {/* Shared Activity — ticked when several executives ran
+                        this same activity together (same ward). Enter the
+                        TOTAL participants seen; do not divide. */}
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      style={[styles.topicCheckList, styles.sharedActivityRow]}
+                      onPress={() => setIsSharedActivity(prev => !prev)}
+                      disabled={isSaving}
+                    >
+                      <View
+                        style={[
+                          styles.topicCheckbox,
+                          isSharedActivity && styles.topicCheckboxChecked,
+                        ]}
+                      >
+                        {isSharedActivity && (
+                          <MaterialCommunityIcons
+                            name="check"
+                            size={14}
+                            color="#FFFFFF"
+                          />
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.topicCheckLabel,
+                            isSharedActivity && styles.topicCheckLabelChecked,
+                          ]}
+                        >
+                          Shared Activity
+                        </Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Tick if other executives ran this same activity with
+                          you. Enter total participants, do not divide.
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
                   </View>
 
                   {/* Section 04 — Participant Details (only when total > 0) */}
@@ -3288,6 +3332,13 @@ const styles = StyleSheet.create({
   topicCheckListError: {
     borderColor: '#DC2626',
     backgroundColor: 'rgba(220, 38, 38, 0.04)',
+  },
+  sharedActivityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
   },
   topicCheckRow: {
     flexDirection: 'row',

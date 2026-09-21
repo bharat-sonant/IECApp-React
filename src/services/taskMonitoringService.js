@@ -808,6 +808,11 @@ const flattenTaskNode = (
               femaleCount: getFirstText(item?.femaleCount, item?.FemaleCount),
               otherCount: getFirstText(item?.otherCount, item?.OtherCount),
               ageBelow18: getFirstText(item?.ageBelow18, item?.AgeBelow18),
+              isSharedActivity:
+                item?.isSharedActivity === true ||
+                String(item?.isSharedActivity) === 'true',
+              // Not Approved and closed by the approver — no Re-pick.
+              resubmissionRequired: item?.resubmissionRequired !== false,
               // Firebase may return a numeric-keyed topics node as either a
               // sparse array [null, val2, null, val4, val5] or as an object
               // {2:.., 4:.., 5:..}. Normalize either shape to {id: name}.

@@ -20,6 +20,11 @@ import {
   getSessionEmpId,
 } from '../services/locationTrackingService';
 import { loadLoginSession } from '../services/sessionService';
+import {
+  setTaskAlertConfig,
+  clearTaskAlertConfig,
+} from '../NativeModules/LocationTracker';
+import { FIREBASE_CONFIG } from '../firebase/firebaseConfig';
 
 const LocationContext = createContext(null);
 
@@ -82,6 +87,16 @@ export const LocationProvider = ({ children }) => {
         moveFixCount: 2         // Wait 2 fixes before restoring
       });
 
+      // Not Approved task alerts run inside the tracking service — tell it
+      // who is logged in and which city's database to watch.
+      setTaskAlertConfig({
+        empId: String(empId),
+        apiKey: FIREBASE_CONFIG.apiKey,
+        appId: FIREBASE_CONFIG.appId,
+        projectId: FIREBASE_CONFIG.projectId,
+        databaseURL: FIREBASE_CONFIG.databaseURL,
+      });
+
       // start native tracking - listeners are already listening
       startLocationTracking();
 
@@ -105,6 +120,8 @@ export const LocationProvider = ({ children }) => {
 
   // Stop tracking (call on logout)
   const stopTracking = useCallback(async () => {
+    // Logged out — no more task alerts for this executive on this phone.
+    clearTaskAlertConfig();
     if (stopTrackingRef.current) {
       await stopTrackingRef.current();
       stopTrackingRef.current = null;
