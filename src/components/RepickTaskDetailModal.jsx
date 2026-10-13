@@ -59,12 +59,15 @@ const formatDisplayDate = value => {
  * acknowledgeOnly — a task Not Approved WITHOUT resubmission: the executive
  * can view it but not re-pick it, and can only leave through "OK" (no back
  * arrow, hardware back ignored). onAcknowledge(task) runs on OK.
+ * lockedNote — the same view-only mode, but reached because the 24-hour
+ * resubmission window closed, which needs its own wording.
  */
 const RepickTaskDetailModal = ({
   task,
   onClose,
   onRepick,
   acknowledgeOnly = false,
+  lockedNote = false,
   onAcknowledge,
 }) => {
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
@@ -274,13 +277,14 @@ const RepickTaskDetailModal = ({
               <View style={styles.repickFooter}>
                 <View style={styles.noResubmitNote}>
                   <MaterialCommunityIcons
-                    name="information-outline"
+                    name={lockedNote ? 'timer-off-outline' : 'information-outline'}
                     size={16}
                     color={appTheme.colors.neutral.textMuted}
                   />
                   <Text style={styles.noResubmitNoteText}>
-                    No resubmission required. If you picked the wrong task,
-                    pick the correct one from Add Task.
+                    {lockedNote
+                      ? 'The 24-hour window to re-pick this task has closed, so it can no longer be submitted again.'
+                      : 'No resubmission required. If you picked the wrong task, pick the correct one from Add Task.'}
                   </Text>
                 </View>
                 <TouchableOpacity

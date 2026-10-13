@@ -1271,6 +1271,24 @@ const TaskActionModal = ({
           '',
         ).trim(),
         originalPath: initialTask.originalPath || null,
+        // The real task id, kept apart from `id` — an assigned card's `id` is
+        // a synthetic list key, and the submission must be stored under this.
+        taskKey: String(
+          initialTask.taskKey ??
+          initialTask.resolvedTaskId ??
+          '',
+        ).trim(),
+        resolvedTaskId: String(
+          initialTask.resolvedTaskId ??
+          initialTask.taskKey ??
+          '',
+        ).trim(),
+        resolvedWardNo: String(initialTask.resolvedWardNo ?? '').trim(),
+        // Planned from the portal's calendar — carries its own topics,
+        // which are preselected and locked below.
+        isAssigned: initialTask.isAssigned === true,
+        assignedTopics: initialTask.assignedTopics || null,
+        raw: initialTask.raw || initialTask,
       }
       : null;
 
@@ -1280,6 +1298,12 @@ const TaskActionModal = ({
 
     setSelectedTaskParam(autoTask?.title || null);
     setSelectedTaskMeta(autoTask || null);
+    // An assigned task opens with its topics already ticked.
+    setSelectedTopics(
+      autoTask?.isAssigned && autoTask?.assignedTopics
+        ? { ...autoTask.assignedTopics }
+        : {},
+    );
     setDropdownOpen(false);
   }, [visible, mode, initialTask, pickTaskOptions]);
 
@@ -1433,7 +1457,11 @@ const TaskActionModal = ({
 
     setSelectedTaskParam(item.title);
     setSelectedTaskMeta(item);
-    setSelectedTopics({});
+    // A calendar-assigned task comes with its topics already decided — they
+    // are filled in and locked, so the executive cannot drift from the plan.
+    setSelectedTopics(
+      item?.isAssigned && item?.assignedTopics ? { ...item.assignedTopics } : {},
+    );
     setDropdownOpen(false);
     setFieldErrors(prev => {
       if (!prev.selectedTask) {
@@ -1492,7 +1520,11 @@ const TaskActionModal = ({
     if (!meta) {
       return [];
     }
-    const taskId = String(meta.taskId || meta.id || '').trim();
+    // `id` can be a synthetic list key on an assigned card, so the real task
+    // id is tried first — otherwise the catalog lookup below always misses.
+    const taskId = String(
+      meta.taskId || meta.taskKey || meta.resolvedTaskId || meta.id || '',
+    ).trim();
     let topicsMap =
       (meta.raw && meta.raw.topics) ||
       meta.topics ||
@@ -1507,7 +1539,13 @@ const TaskActionModal = ({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [selectedTaskMeta, taskCatalog]);
 
+  // Topics of an assigned task are fixed by the portal's plan.
+  const topicsLocked = !!(
+    selectedTaskMeta?.isAssigned && selectedTaskMeta?.assignedTopics
+  );
+
   const toggleTopic = topic => {
+    if (topicsLocked) return;
     setSelectedTopics(prev => {
       const next = { ...prev };
       if (next[topic.topicId]) {
@@ -2164,9 +2202,23 @@ const TaskActionModal = ({
                           Topics <Text style={styles.reqStar}>*</Text>
                         </Text>
                         <Text style={styles.sectionSubtitle}>
-                          Select the topics covered in this activity
+                          {topicsLocked
+                            ? 'Assigned with this task — these cannot be changed'
+                            : 'Select the topics covered in this activity'}
                         </Text>
                       </View>
+                      {topicsLocked && (
+                        <View style={styles.assignedTopicsBadge}>
+                          <MaterialCommunityIcons
+                            name="lock-outline"
+                            size={12}
+                            color={appTheme.colors.brand.primary}
+                          />
+                          <Text style={styles.assignedTopicsBadgeText}>
+                            Assigned
+                          </Text>
+                        </View>
+                      )}
                     </View>
 
                     {!selectedTaskParam ? (
@@ -2194,9 +2246,10 @@ const TaskActionModal = ({
                               style={[
                                 styles.topicCheckRow,
                                 !isLast && styles.topicCheckRowBorder,
+                                topicsLocked && styles.topicCheckRowLocked,
                               ]}
                               onPress={() => toggleTopic(topic)}
-                              disabled={isSaving}
+                              disabled={isSaving || topicsLocked}
                             >
                               <View
                                 style={[
@@ -3349,6 +3402,25 @@ const styles = StyleSheet.create({
   topicCheckRowBorder: {
     borderBottomWidth: 1,
     borderBottomColor: '#EEF2F6',
+  },
+  // Topics that came with a calendar-assigned task — shown, not editable.
+  topicCheckRowLocked: {
+    backgroundColor: '#F8FAFC',
+  },
+  assignedTopicsBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(18, 59, 74, 0.10)',
+  },
+  assignedTopicsBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    color: appTheme.colors.brand.primary,
   },
   topicCheckbox: {
     width: 22,

@@ -21,8 +21,38 @@ import { ERROR_CATEGORY, logError } from './errorLogService';
  *   resubmissionRequired false — "Do Not Send for Resubmission": the
  *     executive is only informed (popup with the reason); once they tap OK
  *     the app marks it `acknowledged` and it never shows again.
+ *
+ * A task sent back must be re-picked within RESUBMISSION_WINDOW_HOURS of the
+ * rejection. After that the entry is LOCKED: no Re-pick button, and a late
+ * submission is refused. The window is DERIVED from `rejectedAt` — nothing is
+ * stored, so the app and the portal can never disagree.
  */
 const ROOT = 'IECData/IECRejectedTasks';
+
+export const RESUBMISSION_WINDOW_HOURS = 24;
+const WINDOW_MS = RESUBMISSION_WINDOW_HOURS * 60 * 60 * 1000;
+
+// "YYYY-MM-DD HH:mm[:ss]" or ISO -> Date. Android's Date cannot parse the
+// space form, so the space becomes a 'T' first.
+export const parseRejectedAt = value => {
+  const text = asString(value);
+  if (!text) return null;
+  const date = new Date(text.includes('T') ? text : text.replace(' ', 'T'));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+/**
+ * Resubmission window of one rejected entry.
+ * Returns { deadlineAt, isLocked, msLeft } — deadlineAt is null when the
+ * entry has no usable timestamp, and such an entry is never locked.
+ */
+export const getEntryWindow = (entry, now = Date.now()) => {
+  const start = parseRejectedAt(entry?.rejectedAt);
+  if (!start) return { deadlineAt: null, isLocked: false, msLeft: 0 };
+  const deadlineAt = new Date(start.getTime() + WINDOW_MS);
+  const msLeft = deadlineAt.getTime() - now;
+  return { deadlineAt, isLocked: msLeft <= 0, msLeft: Math.max(msLeft, 0) };
+};
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -62,14 +92,23 @@ const toList = node => {
     if (!DATE_KEY.test(date)) return;
     childEntries(byTask).forEach(([taskId, byKey]) => {
       childEntries(byKey).forEach(([key, value]) => {
+        // Older entries have no flag — they were all sent back for re-pick.
+        const sendBack = value.resubmissionRequired !== false;
+        // Only a task sent back has a window; an info-only entry never
+        // expires, it just waits to be acknowledged.
+        const window = sendBack
+          ? getEntryWindow(value)
+          : { deadlineAt: null, isLocked: false, msLeft: 0 };
         list.push({
           ...value,
           entryKey: buildRejectedEntryKey(date, taskId, key),
           date,
           taskId,
           key,
-          // Older entries have no flag — they were all sent back for re-pick.
-          resubmissionRequired: value.resubmissionRequired !== false,
+          resubmissionRequired: sendBack,
+          deadlineAt: window.deadlineAt,
+          isLocked: window.isLocked,
+          msLeft: window.msLeft,
         });
       });
     });

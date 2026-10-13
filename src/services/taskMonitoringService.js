@@ -264,6 +264,28 @@ const resolveNotApprovedRemark = item => {
   return getFirstText(item?.notApprovedRemark);
 };
 
+// Timestamp of the LATEST not_approved entry — the start of the 24-hour
+// resubmission window. Falls back to approvedAt for records written before
+// approvalHistory existed.
+const resolveRejectedAt = (item, approvedAt = '') => {
+  const history = item?.approvalHistory;
+  if (history && typeof history === 'object') {
+    const latest = Object.keys(history)
+      .map(k => ({ num: parseInt(k, 10), entry: history[k] }))
+      .filter(x => x.entry && typeof x.entry === 'object' && Number.isFinite(x.num))
+      .sort((a, b) => a.num - b.num)
+      .reverse()
+      .find(x => {
+        const s = String(x.entry?.status || x.entry?.action || '')
+          .toLowerCase()
+          .trim();
+        return s === 'not_approved' || s === 'notapproved';
+      });
+    if (latest?.entry?.at) return getFirstText(latest.entry.at);
+  }
+  return getFirstText(approvedAt);
+};
+
 const resolveTaskStatus = task => {
   // approvalHistory (if present) is the source of truth: the LATEST entry's
   // status decides current UI status. This way a user re-pick immediately
@@ -813,6 +835,9 @@ const flattenTaskNode = (
                 String(item?.isSharedActivity) === 'true',
               // Not Approved and closed by the approver — no Re-pick.
               resubmissionRequired: item?.resubmissionRequired !== false,
+              // When the approver rejected it — starts the 24-hour
+              // resubmission window the screen enforces.
+              rejectedAt: resolveRejectedAt(item, approvedAt),
               // Firebase may return a numeric-keyed topics node as either a
               // sparse array [null, val2, null, val4, val5] or as an object
               // {2:.., 4:.., 5:..}. Normalize either shape to {id: name}.

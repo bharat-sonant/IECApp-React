@@ -25,6 +25,17 @@ import {
   getPendingMediaCountsByTaskRef,
   subscribePendingMediaQueue,
 } from '../services/pendingUploadService';
+import { getEntryWindow } from '../services/rejectedTaskService';
+
+// "3h 20m" / "45m" — time left to re-pick a Not Approved task.
+const formatTimeLeft = ms => {
+  const minutes = Math.floor(Math.max(0, Number(ms) || 0) / 60000);
+  if (minutes < 1) return 'less than a minute';
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (!hours) return `${rest}m`;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
+};
 
 const STATUS_META = {
   Pending: {
@@ -229,6 +240,17 @@ const TaskMonitoringScreen = ({ navigation }) => {
       loadTasks();
     },
     [repickInitialValues, patchTaskLocally, loadTasks],
+  );
+
+  // Resubmission window of the open task — drives the Re-pick button and the
+  // time-left note. Recomputed whenever a different task is opened.
+  const repickWindow = useMemo(
+    () =>
+      selectedTask?.status === 'Not Approved' &&
+      selectedTask?.resubmissionRequired !== false
+        ? getEntryWindow(selectedTask)
+        : { deadlineAt: null, isLocked: false, msLeft: 0 },
+    [selectedTask],
   );
 
   const MediaViewer = mediaViewerOpen
@@ -872,32 +894,54 @@ const TaskMonitoringScreen = ({ navigation }) => {
 
             {selectedTask?.status === 'Not Approved' ? (
               <View style={styles.repickFooter}>
-                {selectedTask?.resubmissionRequired === false ? (
-                  // Closed by the approver without sending it back — nothing
-                  // to re-pick; a wrong task is picked again as a new task.
+                {selectedTask?.resubmissionRequired === false ||
+                repickWindow.isLocked ? (
+                  // Either closed by the approver without sending it back, or
+                  // the 24-hour window has run out. Both mean: no Re-pick; a
+                  // wrong task is picked again as a new task.
                   <View style={styles.noResubmitNote}>
                     <MaterialCommunityIcons
-                      name="information-outline"
+                      name={
+                        repickWindow.isLocked
+                          ? 'timer-off-outline'
+                          : 'information-outline'
+                      }
                       size={16}
                       color={appTheme.colors.neutral.textMuted}
                     />
                     <Text style={styles.noResubmitNoteText}>
-                      No resubmission required for this task.
+                      {repickWindow.isLocked
+                        ? 'The 24-hour window to re-pick this task has closed.'
+                        : 'No resubmission required for this task.'}
                     </Text>
                   </View>
                 ) : (
-                  <TouchableOpacity
-                    style={styles.repickButton}
-                    activeOpacity={0.85}
-                    onPress={handleRepickTask}
-                  >
-                    <MaterialCommunityIcons
-                      name="refresh"
-                      size={16}
-                      color="#FFF"
-                    />
-                    <Text style={styles.repickButtonText}>Re-pick Task</Text>
-                  </TouchableOpacity>
+                  <>
+                    {!!repickWindow.deadlineAt && (
+                      <View style={styles.noResubmitNote}>
+                        <MaterialCommunityIcons
+                          name="timer-sand"
+                          size={16}
+                          color={appTheme.colors.neutral.textMuted}
+                        />
+                        <Text style={styles.noResubmitNoteText}>
+                          Re-pick within {formatTimeLeft(repickWindow.msLeft)}.
+                        </Text>
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      style={styles.repickButton}
+                      activeOpacity={0.85}
+                      onPress={handleRepickTask}
+                    >
+                      <MaterialCommunityIcons
+                        name="refresh"
+                        size={16}
+                        color="#FFF"
+                      />
+                      <Text style={styles.repickButtonText}>Re-pick Task</Text>
+                    </TouchableOpacity>
+                  </>
                 )}
               </View>
             ) : null}

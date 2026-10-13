@@ -1,5 +1,8 @@
 import {FIREBASE_CONFIG} from './firebaseConfig';
 
+// initializeApp() without a name creates the app under this name.
+const DEFAULT_APP_NAME = '[DEFAULT]';
+
 let _rnApp = null;
 let _initPromise = null;
 
@@ -13,25 +16,43 @@ export const initializeFirebaseApp = async () => {
   }
 
   _initPromise = (async () => {
-    try {
-      const {getApp, getApps, initializeApp} = require('@react-native-firebase/app');
-      const existingApps = getApps();
-      if (existingApps.length > 0) {
-        _rnApp = getApp();
-      } else {
-        _rnApp = initializeApp({
-          apiKey: FIREBASE_CONFIG.apiKey,
-          appId: FIREBASE_CONFIG.appId,
-          projectId: FIREBASE_CONFIG.projectId,
-          databaseURL: FIREBASE_CONFIG.databaseURL,
-          storageBucket: FIREBASE_CONFIG.storageBucket,
-          messagingSenderId: FIREBASE_CONFIG.messagingSenderId,
-        });
-      }
+    const {getApps, initializeApp} = require('@react-native-firebase/app');
+
+    // This project ships no google-services.json, so there is no [DEFAULT]
+    // app until we create one here. getApps() can still come back non-empty
+    // without holding [DEFAULT], and a bare getApp() then throws
+    //   "No Firebase App '[DEFAULT]' has been created"
+    // leaving the app with no Firebase at all for the rest of the session.
+    // So the app is looked up BY NAME and created when it is absent.
+    const findDefault = () =>
+      getApps().find(app => app?.name === DEFAULT_APP_NAME) || null;
+
+    const alreadyCreated = findDefault();
+    if (alreadyCreated) {
+      _rnApp = alreadyCreated;
       return _rnApp;
-    } catch (error) {
-      throw error;
     }
+
+    try {
+      _rnApp = await initializeApp({
+        apiKey: FIREBASE_CONFIG.apiKey,
+        appId: FIREBASE_CONFIG.appId,
+        projectId: FIREBASE_CONFIG.projectId,
+        databaseURL: FIREBASE_CONFIG.databaseURL,
+        storageBucket: FIREBASE_CONFIG.storageBucket,
+        messagingSenderId: FIREBASE_CONFIG.messagingSenderId,
+      });
+    } catch (error) {
+      // Someone else won the race and created it between the two calls —
+      // take theirs instead of failing.
+      const created = findDefault();
+      if (!created) {
+        throw error;
+      }
+      _rnApp = created;
+    }
+
+    return _rnApp;
   })();
 
   try {

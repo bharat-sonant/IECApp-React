@@ -40,9 +40,14 @@ import { useIsFocused } from '@react-navigation/native';
 import {
   acknowledgeRejectedTasks,
   backfillRejectedTasks,
+  getEntryWindow,
   subscribeRejectedTasks,
 } from '../services/rejectedTaskService';
 import { loadTasks as loadTasksForDate } from '../services/taskMonitoringService';
+import {
+  loadAssignedTasks,
+  loadExecutiveBranch,
+} from '../services/assignedTaskService';
  import {
    saveDashboardTaskCache,
    readDashboardTaskCache,
@@ -98,6 +103,29 @@ const formatDayOnly = value => {
     month: 'short',
   });
   return `${String(day).padStart(2, '0')} ${monthName} ${year}`;
+};
+
+// "3h 20m" / "45m" / "less than a minute" — the time left to re-pick.
+const formatTimeLeft = ms => {
+  const total = Math.max(0, Math.floor(Number(ms) || 0) / 60000);
+  const minutes = Math.floor(total);
+  if (minutes < 1) return 'less than a minute';
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (!hours) return `${rest}m`;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
+};
+
+// "10 Oct, 04:15 PM" — the resubmission deadline.
+const formatDeadline = date => {
+  if (!date || Number.isNaN(date.getTime?.())) return '';
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  const hours24 = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const hours12 = hours24 % 12 || 12;
+  const meridiem = hours24 >= 12 ? 'PM' : 'AM';
+  return `${day} ${month}, ${String(hours12).padStart(2, '0')}:${minutes} ${meridiem}`;
 };
 
 const formatCompletionDate = value => {
@@ -345,6 +373,12 @@ const extractUserId = taskData => {
 };
 
 const resolveTaskTag = task => {
+  // Planned from the portal's calendar — counted as KPI work, but shown
+  // apart from a task the executive picked themselves.
+  if (task?.isAssigned) {
+    return 'Assigned';
+  }
+
   const category = resolveTaskCategory(task).toLowerCase();
   if (category === 'kpi') {
     return 'KPI';
@@ -376,7 +410,8 @@ const resolveTaskPriorityChip = task => {
     return 'High';
   }
 
-  if (tag === 'KPI') {
+  // An assigned task is KPI work, so it carries the same Medium chip.
+  if (tag === 'KPI' || tag === 'Assigned') {
     return 'Medium';
   }
 
@@ -1320,6 +1355,9 @@ const DashboardScreen = ({ navigation }) => {
   const [actionModalTask, setActionModalTask] = useState(null);
   const [employeeName, setEmployeeName] = useState('Employee');
   const [loginId, setLoginId] = useState('');
+  // Branch / site from the employee record — the Task Calendar is planned
+  // per site, so the Dashboard only shows this site's assigned tasks.
+  const [executiveBranch, setExecutiveBranch] = useState('');
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [tasksError, setTasksError] = useState('');
@@ -1436,17 +1474,35 @@ const DashboardScreen = ({ navigation }) => {
           session.loginId ||
           'Employee';
 
-        setEmployeeName(resolvedName);
-        setLoginId(
+        const resolvedLoginId =
           session.loginId ||
           session.employee?.userId ||
           session.employee?.id ||
+          '';
+
+        setEmployeeName(resolvedName);
+        setLoginId(resolvedLoginId);
+
+        // Site of this executive — decides which calendar-assigned tasks
+        // belong to them. The session rarely carries it, so fall back to the
+        // employee master, which is where the portal reads it from too.
+        const sessionBranch = String(
+          session.employee?.branch ||
+          session.employee?.Branch ||
           '',
-        );
+        ).trim();
+
+        const branch =
+          sessionBranch || (await loadExecutiveBranch(resolvedLoginId));
+
+        if (isActive) {
+          setExecutiveBranch(branch);
+        }
       } catch {
         if (isActive) {
           setEmployeeName('Employee');
           setLoginId('');
+          setExecutiveBranch('');
         }
       }
     };
@@ -1520,11 +1576,14 @@ const DashboardScreen = ({ navigation }) => {
           ),
         });
 
-        const [kpiResult, priorityResult, currentResult] =
+        const [kpiResult, priorityResult, currentResult, calendarTasks] =
           await Promise.all([
             readFirstExistingPath(kpiPaths),
             readFirstExistingPath(priorityPaths),
             readFirstExistingPath(currentTaskPaths),
+            // Planned from the portal's Task Calendar for this executive's
+            // site — KPI tasks that are already chosen for the day.
+            loadAssignedTasks(dateParts.isoDate, executiveBranch),
           ]);
 
         const kpiTasks = flattenTaskNode(
@@ -1552,8 +1611,13 @@ const DashboardScreen = ({ navigation }) => {
         const displayableCurrentTasks =
           buildDisplayableCurrentTasks(currentTasks);
 
+        // Calendar tasks sit first: they are the day's plan. mergeAssignedTasks
+        // drops a duplicate when the same task is also a standing KPI task.
         const assignedTasks = applyCurrentStatusMap(
-          mergeAssignedTasks(kpiTasks, priorityTasks),
+          mergeAssignedTasks(
+            mergeAssignedTasks(calendarTasks || [], kpiTasks),
+            priorityTasks,
+          ),
           currentStatusMap,
         );
         const combinedTasks = [...assignedTasks, ...displayableCurrentTasks];
@@ -1673,7 +1737,9 @@ const DashboardScreen = ({ navigation }) => {
       isActive = false;
       cancelAnimationFrame(rafId);
     };
-  }, [loginId, tasksReloadToken]);
+    // executiveBranch decides which calendar-assigned tasks belong here, so
+    // the list reloads once the session has resolved it.
+  }, [loginId, tasksReloadToken, executiveBranch]);
 
   // Handle location tracking start
   useEffect(() => {
@@ -1795,10 +1861,33 @@ const DashboardScreen = ({ navigation }) => {
     [rejectedTasks],
   );
 
-  // Still waiting for a re-pick (resubmitted ones only await approval).
+  // Ticks once a minute so the "re-pick within …" countdown stays honest and
+  // a card locks itself while the screen is open. Only runs while something
+  // is actually counting down.
+  const [nowTs, setNowTs] = useState(Date.now());
+  const hasOpenWindow = useMemo(
+    () =>
+      rejectedTasks.some(
+        r => r.resubmissionRequired && !r.resubmitted && !r.isLocked,
+      ),
+    [rejectedTasks],
+  );
+  useEffect(() => {
+    if (!hasOpenWindow || !isFocused) return undefined;
+    setNowTs(Date.now());
+    const timer = setInterval(() => setNowTs(Date.now()), 60 * 1000);
+    return () => clearInterval(timer);
+  }, [hasOpenWindow, isFocused]);
+
+  // Still waiting for a re-pick. A task whose 24-hour window has closed is
+  // NOT pending any more — it can no longer be re-picked, so it must not
+  // drive the Re-pick reminder either.
   const repickPending = useMemo(
-    () => resubmitTasks.filter(r => !r.resubmitted),
-    [resubmitTasks],
+    () =>
+      resubmitTasks.filter(
+        r => !r.resubmitted && !getEntryWindow(r, nowTs).isLocked,
+      ),
+    [resubmitTasks, nowTs],
   );
 
   // "Do Not Send for Resubmission" — no card, only an info popup (task +
@@ -1950,14 +2039,20 @@ const DashboardScreen = ({ navigation }) => {
   //    tapped OK (acknowledged).
   const visibleRejected = useMemo(
     () =>
-      rejectedTasks.filter(r =>
-        r.resubmissionRequired
-          ? !r.resubmitted ||
-            String(r.resubmittedAt || '').startsWith(todayIso) ||
-            rejectedPendingUploads.has(r.entryKey)
-          : !r.acknowledged,
-      ),
-    [rejectedTasks, todayIso, rejectedPendingUploads],
+      rejectedTasks.filter(r => {
+        if (!r.resubmissionRequired) return !r.acknowledged;
+        // A locked task is read-only from here on: it stays until the
+        // executive has seen it, then goes, like an info-only entry.
+        if (!r.resubmitted && getEntryWindow(r, nowTs).isLocked) {
+          return !r.acknowledged;
+        }
+        return (
+          !r.resubmitted ||
+          String(r.resubmittedAt || '').startsWith(todayIso) ||
+          rejectedPendingUploads.has(r.entryKey)
+        );
+      }),
+    [rejectedTasks, todayIso, rejectedPendingUploads, nowTs],
   );
 
   // Largest pending count seen per upload, so the card can show "Uploading
@@ -2080,6 +2175,15 @@ const DashboardScreen = ({ navigation }) => {
     if (!item.resubmissionRequired) {
       return renderViewOnlyRejectedTask(item);
     }
+    // 24 hours gone and never re-picked — the task is closed. It reads like
+    // the "no resubmission" card: view it, tap OK, and it is done.
+    const window = getEntryWindow(item, nowTs);
+    if (window.isLocked && !item.resubmitted) {
+      return renderViewOnlyRejectedTask(item, {
+        tagText: 'Resubmission Closed',
+        note: `The 24-hour window closed on ${formatDeadline(window.deadlineAt)}.`,
+      });
+    }
     const isOpening = repickOpeningKey === item.entryKey;
     // Re-picked during this visit — shown like any other picked task.
     const isRepicked = !!item.resubmitted;
@@ -2147,6 +2251,31 @@ const DashboardScreen = ({ navigation }) => {
             Picked on {formatDayOnly(item.date)}
           </Text>
         </View>
+
+        {/* Time left to re-pick — the clock the executive is racing. Turns
+            red in the last two hours. */}
+        {!isRepicked && !!window.deadlineAt && (
+          <View style={styles.rejectedMetaRow}>
+            <MaterialCommunityIcons
+              name="timer-sand"
+              size={13}
+              color={
+                window.msLeft <= 2 * 60 * 60 * 1000
+                  ? appTheme.colors.status.danger
+                  : appTheme.colors.neutral.textMuted
+              }
+            />
+            <Text
+              style={[
+                styles.rejectedDate,
+                window.msLeft <= 2 * 60 * 60 * 1000 && styles.deadlineUrgent,
+              ]}
+            >
+              Re-pick within {formatTimeLeft(window.msLeft)} · by{' '}
+              {formatDeadline(window.deadlineAt)}
+            </Text>
+          </View>
+        )}
 
         <View style={styles.taskFooter}>
           <View
@@ -2217,8 +2346,11 @@ const DashboardScreen = ({ navigation }) => {
     );
   };
 
-  // Not Approved, not sent for resubmission — info only, until viewed.
-  const renderViewOnlyRejectedTask = item => {
+  // Not Approved and not actionable — either "do not send for resubmission"
+  // or a re-pick whose 24-hour window closed. Info only, until viewed.
+  const renderViewOnlyRejectedTask = (item, options = {}) => {
+    const tagText = options.tagText || 'No Resubmission';
+    const note = options.note || '';
     const isOpening = repickOpeningKey === item.entryKey;
     const taskTag = resolveTaskTag(item);
     const priorityChip = resolveTaskPriorityChip(item);
@@ -2234,7 +2366,7 @@ const DashboardScreen = ({ navigation }) => {
             </View>
             <View style={[styles.rejectedTag, styles.viewOnlyTag]}>
               <Text style={[styles.rejectedTagText, styles.viewOnlyTagText]}>
-                No Resubmission
+                {tagText}
               </Text>
             </View>
           </View>
@@ -2272,6 +2404,17 @@ const DashboardScreen = ({ navigation }) => {
             Picked on {formatDayOnly(item.date)}
           </Text>
         </View>
+
+        {!!note && (
+          <View style={styles.rejectedMetaRow}>
+            <MaterialCommunityIcons
+              name="timer-off-outline"
+              size={13}
+              color={appTheme.colors.neutral.textMuted}
+            />
+            <Text style={styles.rejectedDate}>{note}</Text>
+          </View>
+        )}
 
         <View style={styles.taskFooter}>
           <View
@@ -2345,10 +2488,27 @@ const DashboardScreen = ({ navigation }) => {
     }
 
     return (
-      <View style={styles.taskCard}>
+      // A planned task carries a left accent and a blue tag, so the day's
+      // plan is distinguishable at a glance from self-picked work.
+      <View style={[styles.taskCard, item.isAssigned && styles.assignedTaskCard]}>
+        {item.isAssigned && <View style={styles.assignedAccent} />}
         <View style={styles.taskHeader}>
-          <View style={styles.typeWrap}>
-            <Text style={styles.taskType}>{taskTag}</Text>
+          <View
+            style={[styles.typeWrap, item.isAssigned && styles.assignedTypeWrap]}
+          >
+            {item.isAssigned && (
+              <MaterialCommunityIcons
+                name="calendar-check-outline"
+                size={12}
+                color={appTheme.colors.brand.primary}
+                style={styles.assignedTypeIcon}
+              />
+            )}
+            <Text
+              style={[styles.taskType, item.isAssigned && styles.assignedTypeText]}
+            >
+              {taskTag}
+            </Text>
           </View>
           <View
             style={[
@@ -2714,10 +2874,19 @@ const DashboardScreen = ({ navigation }) => {
         task={detailTask}
         onClose={() => setDetailTask(null)}
         onRepick={handleDetailRepick}
-        // Not sent for resubmission: view only, leave through OK.
+        // View only, leave through OK — either never sent back, or sent back
+        // and the 24-hour window has since closed.
         acknowledgeOnly={
           !!detailTask?._rejectedEntry &&
-          !detailTask._rejectedEntry.resubmissionRequired
+          (!detailTask._rejectedEntry.resubmissionRequired ||
+            (!detailTask._rejectedEntry.resubmitted &&
+              getEntryWindow(detailTask._rejectedEntry, nowTs).isLocked))
+        }
+        lockedNote={
+          !!detailTask?._rejectedEntry &&
+          detailTask._rejectedEntry.resubmissionRequired &&
+          !detailTask._rejectedEntry.resubmitted &&
+          getEntryWindow(detailTask._rejectedEntry, nowTs).isLocked
         }
         onAcknowledge={handleDetailAcknowledge}
       />
@@ -2922,6 +3091,31 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
   },
+  // ── Calendar-assigned task (the day's plan) ──
+  assignedTaskCard: {
+    borderColor: 'rgba(18, 59, 74, 0.18)',
+    overflow: 'hidden',
+  },
+  assignedAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 5,
+    backgroundColor: appTheme.colors.brand.primary,
+  },
+  assignedTypeWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(18, 59, 74, 0.10)',
+  },
+  assignedTypeIcon: {
+    marginTop: -1,
+  },
+  assignedTypeText: {
+    color: appTheme.colors.brand.primary,
+  },
   taskType: {
     fontSize: 11,
     fontWeight: '800',
@@ -3066,6 +3260,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: appTheme.colors.neutral.textMuted,
+  },
+  // Last two hours of the resubmission window.
+  deadlineUrgent: {
+    color: appTheme.colors.status.danger,
   },
   repickBtn: {
     backgroundColor: appTheme.colors.status.danger,

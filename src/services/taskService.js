@@ -12,7 +12,10 @@ import {
 } from './pendingUploadService';
 import { getUserCurrentLocation } from './locationTrackingService';
 import { ERROR_CATEGORY, logError } from './errorLogService';
-import { markRejectedTaskResubmitted } from './rejectedTaskService';
+import {
+  getEntryWindow,
+  markRejectedTaskResubmitted,
+} from './rejectedTaskService';
 
 /**
  * Secondary bookkeeping writes that run after the task itself is already
@@ -162,18 +165,29 @@ const buildOldTaskPayload = ({
     includesToken(sourceLabel, 'other') ||
     includesToken(sourceLabel, 'self') ||
     sourcePath.includes('IECData/Tasks');
+  // Planned from the portal's Task Calendar. KPI is only the fall-through
+  // below, which is too loose to rely on for a new source, so it is matched
+  // explicitly here and wins over everything except an actual priority task.
+  const isAssignedTask =
+    taskChoice?.isAssigned === true ||
+    sourcePath.includes('IECTaskCalendar') ||
+    includesToken(sourceLabel, 'assigned');
   const taskCategory = isPriorityTask
     ? 'Priority'
-    : isOtherTask
-      ? 'Other'
-      : mode === 'add_other'
+    : isAssignedTask
+      ? 'KPI'
+      : isOtherTask
         ? 'Other'
-        : 'KPI';
+        : mode === 'add_other'
+          ? 'Other'
+          : 'KPI';
   const taskTypeValue = isPriorityTask
     ? 'high'
-    : isOtherTask
-      ? 'low'
-      : 'medium';
+    : isAssignedTask
+      ? 'medium'
+      : isOtherTask
+        ? 'low'
+        : 'medium';
   const payload = {
     _at: currentDateTime,
     latLng: isValidCoordinate(latitude) && isValidCoordinate(longitude)
@@ -208,6 +222,11 @@ const buildOldTaskPayload = ({
     payload.isSharedActivity = true;
   }
 
+  // Planned work, so reports can tell it apart from a self-picked task.
+  if (isAssignedTask) {
+    payload.assignedFrom = 'calendar';
+  }
+
   // Covered topics saved as { topicId: topicName } (same format as the mapping).
   const normalizedTopics =
     topics && typeof topics === 'object' && !Array.isArray(topics)
@@ -232,6 +251,19 @@ const deriveTaskStorageKey = ({ selectedTask, taskSourcePath }) => {
     selectedTask?.priority || selectedTask?.type || '',
   ).toLowerCase();
   const sourcePath = asString(taskSourcePath);
+
+  // A calendar-assigned card carries a synthetic list id ("assigned-6-19"),
+  // unique per plan entry so two plans of one task on a day stay apart. The
+  // submission must still be stored under the REAL task id, or the portal
+  // cannot resolve the task and the Dashboard cannot match the card.
+  if (selectedTask?.isAssigned) {
+    const assignedTaskId = asString(
+      selectedTask?.taskKey || selectedTask?.resolvedTaskId,
+    );
+    if (assignedTaskId) {
+      return assignedTaskId;
+    }
+  }
 
   if (sourcePath.includes('IECPriorityTasks')) {
     const segments = sourcePath.split('/').filter(Boolean);
@@ -392,6 +424,21 @@ const handleRepickSubmission = async ({
   const targetPath = `IECData/IECTasks/${ctxUserId}/${year}/${month}/${isoDate}/${taskKey}/${taskCount}`;
   const cityName = asString(CITY?.cityName || getSessionCity(session));
   const { currentDateTime } = getCurrentDateParts();
+
+  // The 24-hour window is checked again HERE, against the live rejection
+  // record, because the screen may have been open since before it closed or
+  // the phone may have been offline. Read fresh; never trust the UI state.
+  const rejectedEntry = await getData(
+    `IECData/IECRejectedTasks/${ctxUserId}/${isoDate}/${taskKey}/${taskCount}`,
+  );
+  if (rejectedEntry && rejectedEntry.resubmissionRequired !== false) {
+    const { isLocked } = getEntryWindow(rejectedEntry);
+    if (isLocked) {
+      throw new Error(
+        'The 24-hour window to re-pick this task has closed. It can no longer be submitted again.',
+      );
+    }
+  }
 
   // Location — try fresh capture; fall back to provided location.
   let finalLatLng = '';
