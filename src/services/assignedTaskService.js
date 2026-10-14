@@ -11,7 +11,8 @@ import { getData } from '../firebase/firebaseService';
  * Nothing is written per executive, so an executive added later is covered
  * automatically: the app reads the day's plan and keeps the entries meant for
  * its own site. Such a task reaches the Dashboard as a KPI task that is
- * already chosen, with its topics preselected and locked.
+ * already chosen. `topics` holds only the topics to PRE-TICK — the submit
+ * screen still lists every topic of the task, and any can be changed.
  */
 const ROOT = 'IECData/IECTaskCalendar';
 
@@ -116,8 +117,8 @@ export const loadAssignedTasks = async (isoDate, branch) => {
         images: 0,
         videos: 0,
         description: '',
-        // Planned work — the Dashboard tags it, and the topic picker locks
-        // the assigned topics instead of letting them be changed.
+        // Planned work — the Dashboard tags it, and the topic picker opens
+        // with these topics pre-ticked.
         isAssigned: true,
         assignedTopics: topics,
         raw: {
