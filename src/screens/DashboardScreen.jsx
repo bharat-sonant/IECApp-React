@@ -22,6 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import appTheme from '../theme/appTheme';
 import CommonLoader from '../components/CommonLoader';
 import RepickTaskDetailModal from '../components/RepickTaskDetailModal';
+import UpcomingTasksModal from '../components/UpcomingTasksModal';
 import {
   getPendingMediaCountsByTaskRef,
   subscribePendingMediaQueue,
@@ -652,6 +653,11 @@ const buildTaskIdentity = task => {
 };
 
 const buildDashboardDisplayIdentity = task => {
+  // Its own slot, so a submission of the same task never merges into it.
+  if (task?.isAssigned) {
+    return `assigned:${task.listKey || task.id}`;
+  }
+
   const category = resolveTaskCategory(task).toLowerCase();
   let baseIdentity = buildTaskIdentity(task);
 
@@ -742,14 +748,64 @@ const isTaskApproved = task => {
   return approvedStatus.includes('approve');
 };
 
+// Today's submissions per task, keyed like buildTaskIdentity:
+// { count, lastAt } — lastAt is the latest submission's "_at".
+const summarizeSubmissionsByTask = tasks => {
+  const summary = new Map();
+  tasks.forEach(task => {
+    const identity = task ? buildTaskIdentity(task) : '';
+    if (!identity) return;
+    const at = getFirstText(task.raw?._at, task.taskDate);
+    const current = summary.get(identity) || { count: 0, lastAt: '' };
+    summary.set(identity, {
+      count: current.count + 1,
+      lastAt: at > current.lastAt ? at : current.lastAt,
+    });
+  });
+  return summary;
+};
+
+/*
+ * A calendar-assigned task stays open for the WHOLE day: it is never folded
+ * into a submission or marked Completed, so the executive can pick it again
+ * and again. The assigned card carries how often and when it was last picked;
+ * the submissions themselves leave the list once their media has uploaded.
+ */
+const keepAssignedTasksOpen = (tasks, submissionSummary) =>
+  tasks.map(task => {
+    if (!task?.isAssigned) return task;
+    const done = submissionSummary.get(buildTaskIdentity(task));
+    return {
+      ...task,
+      status: 'Pending',
+      doneCount: done?.count || 0,
+      lastPickAt: done?.lastAt || '',
+    };
+  });
+
+// "2026-10-28 10:45" -> "10:45 AM"
+const formatPickTime = value => {
+  const match = String(value || '').match(/(\d{1,2}):(\d{2})/);
+  if (!match) return '';
+  const hours = Number(match[1]);
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  return `${hours % 12 || 12}:${match[2]} ${suffix}`;
+};
+
 const applyCurrentStatusMap = (tasks, currentStatusMap) =>
   tasks
     .filter(task => {
+      if (task?.isAssigned) {
+        return true;
+      }
       const identity = buildTaskIdentity(task);
       const currentTask = identity ? currentStatusMap.get(identity) : null;
       return !currentTask || !isTaskApproved(currentTask);
     })
     .map(task => {
+      if (task?.isAssigned) {
+        return task;
+      }
       const identity = buildTaskIdentity(task);
       const currentTask = identity ? currentStatusMap.get(identity) : null;
 
@@ -873,6 +929,8 @@ const dedupeDashboardTasks = tasks => {
 };
 
 const getDashboardTaskOrderRank = task => {
+  // The day's plan stays on top — it is always open to pick again.
+  if (task?.isAssigned) return -1;
   const tag = resolveTaskTag(task);
   if (tag === 'Priority') return 0;
   if (tag === 'KPI') return 1;
@@ -1351,6 +1409,7 @@ const DashboardScreen = ({ navigation }) => {
 
   const [fabOpen, setFabOpen] = useState(false);
   const [actionModalVisible, setActionModalVisible] = useState(false);
+  const [upcomingVisible, setUpcomingVisible] = useState(false);
   const [actionModalMode, setActionModalMode] = useState('add_kpi');
   const [actionModalTask, setActionModalTask] = useState(null);
   const [employeeName, setEmployeeName] = useState('Employee');
@@ -1420,13 +1479,26 @@ const DashboardScreen = ({ navigation }) => {
     tasksLoading,
   ]);
 
+  /*
+   * Counted from the full list, so a submission of an assigned task still
+   * counts as Completed after its card leaves the screen. An assigned task is
+   * Pending only until it is first picked; after that the card is just the
+   * way to pick it again, so it no longer counts on its own.
+   */
   const metrics = useMemo(() => {
-    const pendingCount = tasks.filter(task => task.status === 'Pending').length;
+    const pendingCount = tasks.filter(task =>
+      task.isAssigned
+        ? !(task.doneCount > 0)
+        : task.status === 'Pending',
+    ).length;
     const completedCount = tasks.filter(
-      task => task.status === 'Completed' || task.status === 'Approved',
+      task =>
+        !task.isAssigned &&
+        (task.status === 'Completed' || task.status === 'Approved'),
     ).length;
     return {
-      total: tasks.length,
+      total: tasks.filter(task => !(task.isAssigned && task.doneCount > 0))
+        .length,
       pending: pendingCount,
       completed: completedCount,
     };
@@ -1613,12 +1685,15 @@ const DashboardScreen = ({ navigation }) => {
 
         // Calendar tasks sit first: they are the day's plan. mergeAssignedTasks
         // drops a duplicate when the same task is also a standing KPI task.
-        const assignedTasks = applyCurrentStatusMap(
-          mergeAssignedTasks(
-            mergeAssignedTasks(calendarTasks || [], kpiTasks),
-            priorityTasks,
+        const assignedTasks = keepAssignedTasksOpen(
+          applyCurrentStatusMap(
+            mergeAssignedTasks(
+              mergeAssignedTasks(calendarTasks || [], kpiTasks),
+              priorityTasks,
+            ),
+            currentStatusMap,
           ),
-          currentStatusMap,
+          summarizeSubmissionsByTask(currentTasks),
         );
         const combinedTasks = [...assignedTasks, ...displayableCurrentTasks];
         // 3. Deep Fetch missing task details if they are not in the catalog
@@ -2073,15 +2148,112 @@ const DashboardScreen = ({ navigation }) => {
     });
   }, [rejectedPendingUploads]);
 
+  /*
+   * A completed task's card, from submit to gone:
+   *   uploading  — media still in the queue
+   *   settling   — queue went quiet; may be only the gap before the next file,
+   *                so the card keeps showing "Uploading" for UPLOAD_SETTLE_MS
+   *   completed  — upload really finished: Completed badge for
+   *                COMPLETED_SHOW_MS, then the card leaves the list
+   * The clock starts at the moment the upload is seen to STOP — not the last
+   * time the queue happened to report it busy — so a slow last file never
+   * makes the card vanish the instant it completes. Completed work still
+   * counts in the summary cards above.
+   */
+  const UPLOAD_SETTLE_MS = 1500;
+  const COMPLETED_SHOW_MS = 3000;
+  const HOLD_AFTER_UPLOAD_MS = UPLOAD_SETTLE_MS + COMPLETED_SHOW_MS;
+  const uploadingKeysRef = React.useRef(new Set());
+  const uploadStoppedAtRef = React.useRef(new Map());
+  const [holdTick, setHoldTick] = useState(0);
+
+  const isDoneTask = t =>
+    !t?.isAssigned && (t?.status === 'Completed' || t?.status === 'Approved');
+
+  const getDoneTaskKey = t =>
+    String(t.listKey || t.originalPath || t.raw?.originalPath || t.id || '');
+
+  // The upload queue is keyed by the submission's path; a KPI card that
+  // turned Completed may still carry its own path, so the submission's
+  // ".../{date}/{taskId}/{key}" ending is matched as well.
+  const isTaskUploading = React.useCallback(
+    t => {
+      const ownRefs = [t.originalPath, t.raw?.originalPath]
+        .map(ref => String(ref || '').trim())
+        .filter(Boolean);
+      const suffix =
+        t.resolvedTaskId && t.leafKey
+          ? `/${todayIso}/${t.resolvedTaskId}/${t.leafKey}`
+          : '';
+      let busy = false;
+      pendingUploadMap.forEach((count, ref) => {
+        if (
+          Number(count) > 0 &&
+          (ownRefs.includes(ref) || (!!suffix && String(ref).endsWith(suffix)))
+        ) {
+          busy = true;
+        }
+      });
+      return busy;
+    },
+    [pendingUploadMap, todayIso],
+  );
+
+  // Phase of a completed task's card right now (see the note above). Called
+  // while rendering, so the moment an upload stops is caught on the very
+  // render that first sees it stopped.
+  const getUploadPhase = t => {
+    const key = getDoneTaskKey(t);
+    if (isTaskUploading(t)) {
+      uploadingKeysRef.current.add(key);
+      uploadStoppedAtRef.current.delete(key);
+      return 'uploading';
+    }
+    if (uploadingKeysRef.current.has(key)) {
+      uploadingKeysRef.current.delete(key);
+      uploadStoppedAtRef.current.set(key, Date.now());
+    }
+    const stoppedAt = uploadStoppedAtRef.current.get(key);
+    if (!stoppedAt) return 'gone';
+    const elapsed = Date.now() - stoppedAt;
+    if (elapsed < UPLOAD_SETTLE_MS) return 'settling';
+    if (elapsed < HOLD_AFTER_UPLOAD_MS) return 'completed';
+    uploadStoppedAtRef.current.delete(key);
+    return 'gone';
+  };
+
+  const visibleTasks = useMemo(
+    () => tasks.filter(t => !isDoneTask(t) || getUploadPhase(t) !== 'gone'),
+    // holdTick re-runs this while a card is settling or showing Completed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tasks, isTaskUploading, holdTick],
+  );
+
+  // Tick while any card is settling or showing Completed, so it moves on to
+  // the Completed badge and then off the list on time.
+  const hasHeldCard = uploadStoppedAtRef.current.size > 0;
+  useEffect(() => {
+    if (!hasHeldCard) return undefined;
+    const interval = setInterval(() => setHoldTick(tick => tick + 1), 250);
+    return () => clearInterval(interval);
+  }, [hasHeldCard]);
+
+  // "Uploading" also covers the settling gap, so the badge does not flicker
+  // to Completed and back between files.
+  const isTaskStillUploading = t => {
+    const phase = getUploadPhase(t);
+    return phase === 'uploading' || phase === 'settling';
+  };
+
   // Dashboard list: Not Approved tasks first (Re-pick card), then today's
   // tasks. A task of today that is on the rejected list is not repeated in
   // today's tasks.
   const dashboardListData = useMemo(() => {
-    if (!rejectedTasks.length) return tasks;
+    if (!rejectedTasks.length) return visibleTasks;
     const rejectedSuffixes = rejectedTasks.map(
       r => `/${r.date}/${r.taskId}/${r.key}`,
     );
-    const remaining = tasks.filter(t => {
+    const remaining = visibleTasks.filter(t => {
       const path = String(t?.originalPath || t?.raw?.originalPath || '');
       return !rejectedSuffixes.some(suffix => path.endsWith(suffix));
     });
@@ -2089,7 +2261,7 @@ const DashboardScreen = ({ navigation }) => {
       ...visibleRejected.map(r => ({ ...r, _rejected: true })),
       ...remaining,
     ];
-  }, [rejectedTasks, visibleRejected, tasks]);
+  }, [rejectedTasks, visibleRejected, visibleTasks]);
 
   // Keep task catalog in real-time sync with Firebase (new/edited/removed tasks).
   useEffect(() => {
@@ -2462,7 +2634,9 @@ const DashboardScreen = ({ navigation }) => {
     const pendingUploadCount = taskRef
       ? Number(pendingUploadMap.get(taskRef) || 0)
       : 0;
-    const isUploading = pendingUploadCount > 0;
+    const isUploading =
+      pendingUploadCount > 0 ||
+      (isDoneTask(item) && isTaskStillUploading(item));
     const totalMedia =
       Number(item?.images || 0) + Number(item?.videos || 0);
     const uploadedMedia = Math.max(0, totalMedia - pendingUploadCount);
@@ -2533,23 +2707,62 @@ const DashboardScreen = ({ navigation }) => {
         <Text style={styles.taskTitle} numberOfLines={2}>
           {getDashboardDisplayTitle(item)}
         </Text>
-        <View style={styles.taskFooter}>
-          <View
-            style={[
-              styles.statusChip,
-              { backgroundColor: status.backgroundColor },
-            ]}
-          >
+        {item.isAssigned && (
+          <View style={styles.assignedDoneRow}>
             <MaterialCommunityIcons
-              name={status.icon}
-              size={14}
-              color={status.textColor}
-              style={styles.statusIcon}
+              name={item.doneCount > 0 ? 'check-circle-outline' : 'repeat'}
+              size={13}
+              color={
+                item.doneCount > 0
+                  ? appTheme.colors.status.success
+                  : '#64748B'
+              }
             />
-            <Text style={[styles.statusText, { color: status.textColor }]}>
-              {status.label}
+            <Text
+              style={[
+                styles.assignedDoneText,
+                item.doneCount > 0 && styles.assignedDoneTextActive,
+              ]}
+            >
+              {item.doneCount > 0
+                ? `Done ${item.doneCount}× today`
+                : 'Open all day · can be picked more than once'}
             </Text>
           </View>
+        )}
+        <View style={styles.taskFooter}>
+          {/* Once an assigned task has been picked, "Pending" no longer
+              fits — the card shows when it was last picked instead. */}
+          {item.isAssigned && item.doneCount > 0 ? (
+            <View style={styles.lastPickChip}>
+              <MaterialCommunityIcons
+                name="clock-check-outline"
+                size={14}
+                color={appTheme.colors.status.success}
+                style={styles.statusIcon}
+              />
+              <Text style={styles.lastPickText}>
+                Last pick {formatPickTime(item.lastPickAt)}
+              </Text>
+            </View>
+          ) : (
+            <View
+              style={[
+                styles.statusChip,
+                { backgroundColor: status.backgroundColor },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name={status.icon}
+                size={14}
+                color={status.textColor}
+                style={styles.statusIcon}
+              />
+              <Text style={[styles.statusText, { color: status.textColor }]}>
+                {status.label}
+              </Text>
+            </View>
+          )}
 
           {isUploading ? (
             <View style={styles.uploadingChip}>
@@ -2595,7 +2808,9 @@ const DashboardScreen = ({ navigation }) => {
               onPress={() => handleTaskAction(item)}
               activeOpacity={0.8}
             >
-              <Text style={styles.actionBtnText}>Pick Task</Text>
+              <Text style={styles.actionBtnText}>
+                {item.isAssigned && item.doneCount > 0 ? 'Pick Again' : 'Pick Task'}
+              </Text>
               <MaterialCommunityIcons
                 name="arrow-right-circle"
                 size={16}
@@ -2661,6 +2876,17 @@ const DashboardScreen = ({ navigation }) => {
 
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Tasks</Text>
+            <TouchableOpacity
+              style={styles.upcomingBtn}
+              onPress={() => setUpcomingVisible(true)}
+              activeOpacity={0.8}>
+              <MaterialCommunityIcons
+                name="calendar-clock-outline"
+                size={15}
+                color={appTheme.colors.brand.primary}
+              />
+              <Text style={styles.upcomingBtnText}>Upcoming</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -2691,16 +2917,30 @@ const DashboardScreen = ({ navigation }) => {
               !tasksLoading ? (
                 <View style={styles.emptyState}>
                   <MaterialCommunityIcons
-                    name="clipboard-text-outline"
+                    name={
+                      !tasksError && metrics.completed > 0
+                        ? 'check-circle-outline'
+                        : 'clipboard-text-outline'
+                    }
                     size={42}
-                    color={appTheme.colors.neutral.textMuted}
+                    color={
+                      !tasksError && metrics.completed > 0
+                        ? appTheme.colors.status.success
+                        : appTheme.colors.neutral.textMuted
+                    }
                   />
                   <Text style={styles.emptyTitle}>
-                    {tasksError ? 'Unable to load tasks' : 'No tasks found'}
+                    {tasksError
+                      ? 'Unable to load tasks'
+                      : metrics.completed > 0
+                        ? 'All tasks completed'
+                        : 'No tasks found'}
                   </Text>
                   <Text style={styles.emptySubtitle}>
                     {tasksError ||
-                      'Your assigned tasks will appear here once they are available.'}
+                      (metrics.completed > 0
+                        ? `${metrics.completed} task${metrics.completed > 1 ? 's' : ''} submitted today. New tasks will appear here.`
+                        : 'Your assigned tasks will appear here once they are available.')}
                   </Text>
                 </View>
               ) : null
@@ -2869,6 +3109,12 @@ const DashboardScreen = ({ navigation }) => {
         </Pressable>
       </Modal>
 
+      <UpcomingTasksModal
+        visible={upcomingVisible}
+        onClose={() => setUpcomingVisible(false)}
+        branch={executiveBranch}
+      />
+
       {/* Task Details (same as Task Monitoring) for a Not Approved task */}
       <RepickTaskDetailModal
         task={detailTask}
@@ -3031,6 +3277,22 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     includeFontPadding: false,
   },
+  upcomingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(18, 59, 74, 0.18)',
+    backgroundColor: 'rgba(18, 59, 74, 0.06)',
+  },
+  upcomingBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: appTheme.colors.brand.primary,
+  },
   seeAll: {
     fontSize: 13,
     fontWeight: '700',
@@ -3116,6 +3378,22 @@ const styles = StyleSheet.create({
   assignedTypeText: {
     color: appTheme.colors.brand.primary,
   },
+  assignedDoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: -2,
+    marginBottom: 8,
+  },
+  assignedDoneText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  assignedDoneTextActive: {
+    color: appTheme.colors.status.success,
+  },
   taskType: {
     fontSize: 11,
     fontWeight: '800',
@@ -3187,6 +3465,19 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 11,
     fontWeight: '800',
+  },
+  lastPickChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(22, 122, 69, 0.10)',
+  },
+  lastPickText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: appTheme.colors.status.success,
   },
   actionBtn: {
     flexDirection: 'row',

@@ -134,3 +134,49 @@ export const loadAssignedTasks = async (isoDate, branch) => {
 
   return tasks;
 };
+
+const pad = value => String(value).padStart(2, '0');
+
+const addDays = (isoDate, days) => {
+  const [year, month, day] = asString(isoDate).split('-').map(Number);
+  const date = new Date(year, month - 1, day + days);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+
+/** Days left in the month after `isoDate` (0 on the last day). */
+export const daysLeftInMonth = isoDate => {
+  const [year, month, day] = asString(isoDate).split('-').map(Number);
+  if (!year || !month || !day) return 0;
+  const lastDay = new Date(year, month, 0).getDate();
+  return Math.max(0, lastDay - day);
+};
+
+/**
+ * What is planned for the executive's site from TOMORROW to the END OF THIS
+ * MONTH — read-only, so they can see what is coming. One small read per day,
+ * run in parallel.
+ * Returns [{ date, tasks: [{ id, title, topics }] }] for days that have
+ * something planned, nearest first. Never throws.
+ */
+export const loadUpcomingAssignedTasks = async (todayIsoDate, branch) => {
+  const today = asString(todayIsoDate);
+  if (!today) return [];
+
+  const dates = Array.from({length: daysLeftInMonth(today)}, (_, index) =>
+    addDays(today, index + 1),
+  );
+
+  const perDay = await Promise.all(
+    dates.map(async date => ({
+      date,
+      tasks: (await loadAssignedTasks(date, branch)).map(task => ({
+        id: task.listKey,
+        taskId: task.resolvedTaskId,
+        title: task.title,
+        topics: task.assignedTopics ? Object.values(task.assignedTopics) : [],
+      })),
+    })),
+  );
+
+  return perDay.filter(day => day.tasks.length > 0);
+};
